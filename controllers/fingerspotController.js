@@ -326,7 +326,7 @@ async function callGetUserInfoBulk(req, res) {
   const pinWidth = Math.max(Number(req.body?.pin_width || 0), 0);
   const transPrefix = req.body?.trans_prefix || 'userinfo-bulk';
   const dryRun = Boolean(req.body?.dry_run);
-  const concurrency = Math.min(Math.max(Number(req.body?.concurrency || 3), 1), 10);
+  const concurrency = Math.min(Math.max(Number(req.body?.concurrency || 5), 1), 10);
 
   if (!sourceCloudId) {
     return res.status(400).json({

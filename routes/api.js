@@ -19,6 +19,11 @@ const {
   getEmployees,
   syncEmployeesToMachine,
 } = require('../controllers/userSyncController');
+const {
+  getRuntimeConfig,
+  updateSyncJobs,
+  getSyncJobsOverride,
+} = require('../controllers/runtimeController');
 
 const router = express.Router();
 
@@ -37,5 +42,8 @@ router.post('/fingerspot/get-attlog-bulk', callGetAttlogBulk);
 router.get('/employees', getEmployees);
 router.post('/fingerspot/get-userinfo-bulk', callGetUserInfoBulk);
 router.post('/fingerspot/sync-employees', syncEmployeesToMachine);
+router.get('/runtime/config', getRuntimeConfig);
+router.get('/runtime/sync-jobs-override', getSyncJobsOverride);
+router.put('/runtime/sync-jobs-override', updateSyncJobs);
 
 module.exports = router;

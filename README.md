@@ -31,12 +31,45 @@ Khusus endpoint callback webhook (`/api/webhook` dan `/api/webhook/userinfo`) ti
 
 Kalau Fingerspot mengirim field identitas mesin, gunakan salah satu: `machine_id`, `machineId`, `device_id`, `deviceId`, atau header `x-machine-id`.
 
-Untuk dua mesin pada screenshot ini, default mapping yang dipakai adalah:
+Default mapping awal yang dipakai adalah:
 
 - `GQ5179635` -> `VIVO ASSEMBLING 1`
 - `GQ5778665` -> `VIVO ASSEMBLING 2`
 
-Mapping ini bisa diganti lewat `.env` dengan `MACHINE_1_CLOUD_ID`, `MACHINE_1_NAME`, `MACHINE_2_CLOUD_ID`, dan `MACHINE_2_NAME`.
+Untuk penambahan mesin ke depannya, Anda bisa:
+
+- Tetap pakai pola `MACHINE_1_*`, `MACHINE_2_*`, `MACHINE_3_*`, dst.
+- Atau pakai `MACHINE_MAP_JSON` di `.env` agar semua mesin didefinisikan dalam satu variabel.
+
+Contoh `MACHINE_MAP_JSON`:
+
+```env
+MACHINE_MAP_JSON={"GQ5179635":"VIVO ASSEMBLING 1","GQ5778665":"VIVO ASSEMBLING 2","GQ1234567":"VIVO ASSEMBLING 3"}
+```
+
+Jika `MACHINE_MAP_JSON` diisi, mapping ini akan diprioritaskan.
+
+## Scheduler Sync Untuk Banyak Mesin
+
+Cron sync sudah bisa dijalankan untuk banyak pasangan mesin sekaligus.
+
+1. Aktifkan scheduler:
+
+```env
+ENABLE_SYNC_CRON=true
+SYNC_CRON_INTERVAL_MINUTES=5
+```
+
+2. Isi pasangan sync via `SYNC_JOBS_JSON`:
+
+```env
+SYNC_JOBS_JSON=[
+  {"source_cloud_id":"GQ5179635","target_cloud_id":"GQ5778665","trans_prefix":"sync-1-2","limit":1000,"concurrency":3,"dry_run":false},
+  {"source_cloud_id":"GQ1234567","target_cloud_id":"GQ5778665","trans_prefix":"sync-3-2","limit":1000,"concurrency":3,"dry_run":false}
+]
+```
+
+Jika `SYNC_JOBS_JSON` kosong, sistem akan fallback ke mode lama (`SYNC_SOURCE_CLOUD_ID` dan `SYNC_TARGET_CLOUD_ID`).
 
 ## Endpoint
 
@@ -55,6 +88,9 @@ Mapping ini bisa diganti lewat `.env` dengan `MACHINE_1_CLOUD_ID`, `MACHINE_1_NA
 - `POST /api/webhook/userinfo` - endpoint callback webhook userinfo dari Fingerspot
 - `GET /api/employees` - ambil daftar user unik dari data webhook userinfo
 - `POST /api/fingerspot/sync-employees` - kirim user dari mesin sumber ke mesin tujuan (misal mesin B)
+- `GET /api/runtime/config` - lihat machine map dan sync jobs aktif (source env/override)
+- `GET /api/runtime/sync-jobs-override` - lihat override sync jobs dari file runtime
+- `PUT /api/runtime/sync-jobs-override` - simpan override sync jobs (langsung dipakai cron tanpa restart)
 
 ## Ambil Semua Karyawan Dari Mesin A
 
@@ -70,18 +106,19 @@ Karena `get_userinfo` harus dipanggil per PIN, gunakan endpoint bulk ini untuk m
 {
   "cloud_id": "GQ5179635",
   "start_pin": 1,
-  "end_pin": 1000,
+  "end_pin": 200,
   "pin_width": 4,
   "trans_prefix": "userinfo-bulk",
-  "concurrency": 3,
+  "concurrency": 5,
   "dry_run": true
 }
 ```
 
 Catatan:
 
-- `start_pin` dan `end_pin` adalah range PIN yang mau dicoba. Kalau awal PIN perusahaan mulai dari `0001`, pakai batas `1000` dulu.
+- `start_pin` dan `end_pin` adalah range PIN yang mau dicoba.
 - `pin_width` dipakai supaya PIN jadi `0001`, `0013`, dst.
+- `concurrency` lebih tinggi akan lebih cepat, tapi jangan terlalu tinggi kalau mesin mulai lambat atau sering balas `ERROR_NO_ID`.
 - Mulai dari `dry_run: true` dulu untuk cek daftar PIN yang akan dikirim.
 - Setelah itu ubah ke `dry_run: false` agar permintaan benar-benar dikirim ke Fingerspot.
 - Semua data yang kembali dari webhook akan tetap tersimpan di [logs/data.txt](logs/data.txt).
@@ -102,9 +139,8 @@ Contoh copy semua user dari mesin A (`GQ5179635`) ke mesin B (`GQ5778665`):
 - Method: `POST`
 - URL: `http://localhost:3000/api/fingerspot/sync-employees`
 - Headers:
-  - `Content-Type: application/json`
-- Body JSON:
-
+  - `
+  
 ```json
 {
   "source_cloud_id": "GQ5179635",

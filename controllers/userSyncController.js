@@ -90,78 +90,91 @@ async function callSetUserInfo(payload) {
   };
 }
 
-async function getEmployees(req, res) {
-  const sourceCloudId = req.query.source_cloud_id || req.query.cloud_id || null;
-  const limit = Math.max(Number(req.query.limit || 500), 1);
-
-  const records = await getWebhookRecords();
-  const users = extractUsersFromRecords(records, sourceCloudId).slice(0, limit);
-
-  return res.json({
-    success: true,
-    count: users.length,
-    data: users,
-  });
+function buildSyncConfig(input = {}) {
+  return {
+    sourceCloudId: input.source_cloud_id || input.sourceCloudId || null,
+    targetCloudId: input.target_cloud_id || input.targetCloudId || null,
+    transPrefix: input.trans_prefix || input.transPrefix || 'sync-user',
+    dryRun: Boolean(input.dry_run ?? input.dryRun),
+    limit: Math.max(Number(input.limit || 1000), 1),
+    concurrency: Math.min(Math.max(Number(input.concurrency || 3), 1), 10),
+  };
 }
 
-async function syncEmployeesToMachine(req, res) {
+async function runEmployeeSync(rawConfig = {}) {
+  const {
+    sourceCloudId,
+    targetCloudId,
+    transPrefix,
+    dryRun,
+    limit,
+    concurrency,
+  } = buildSyncConfig(rawConfig);
+
   if (!FINGERSPOT_API_TOKEN) {
-    return res.status(500).json({
-      success: false,
-      message: 'FINGERSPOT_API_TOKEN belum diisi di .env',
-    });
+    return {
+      statusCode: 500,
+      payload: {
+        success: false,
+        message: 'FINGERSPOT_API_TOKEN belum diisi di .env',
+      },
+    };
   }
 
-  const sourceCloudId = req.body?.source_cloud_id;
-  const targetCloudId = req.body?.target_cloud_id;
-  const transPrefix = req.body?.trans_prefix || 'sync-user';
-  const dryRun = Boolean(req.body?.dry_run);
-  const limit = Math.max(Number(req.body?.limit || 1000), 1);
-
   if (!sourceCloudId) {
-    return res.status(400).json({
-      success: false,
-      message: 'source_cloud_id wajib diisi',
-    });
+    return {
+      statusCode: 400,
+      payload: {
+        success: false,
+        message: 'source_cloud_id wajib diisi',
+      },
+    };
   }
 
   if (!targetCloudId) {
-    return res.status(400).json({
-      success: false,
-      message: 'target_cloud_id wajib diisi',
-    });
+    return {
+      statusCode: 400,
+      payload: {
+        success: false,
+        message: 'target_cloud_id wajib diisi',
+      },
+    };
   }
 
   const records = await getWebhookRecords();
   const users = extractUsersFromRecords(records, sourceCloudId).slice(0, limit);
 
   if (!users.length) {
-    return res.status(404).json({
-      success: false,
-      message: 'Tidak ada data userinfo dari mesin sumber. Jalankan get_userinfo dulu sampai webhook masuk.',
-      count: 0,
-      data: [],
-    });
+    return {
+      statusCode: 404,
+      payload: {
+        success: false,
+        message: 'Tidak ada data userinfo dari mesin sumber. Jalankan get_userinfo dulu sampai webhook masuk.',
+        count: 0,
+        data: [],
+      },
+    };
   }
 
   if (dryRun) {
-    return res.json({
-      success: true,
-      message: 'Dry run OK. Tidak ada request yang dikirim ke Fingerspot.',
-      count: users.length,
-      target_cloud_id: targetCloudId,
-      data: users,
-    });
+    return {
+      statusCode: 200,
+      payload: {
+        success: true,
+        message: 'Dry run OK. Tidak ada request yang dikirim ke Fingerspot.',
+        count: users.length,
+        target_cloud_id: targetCloudId,
+        concurrency,
+        data: users,
+      },
+    };
   }
 
   const results = [];
-  let successCount = 0;
-
-  for (let i = 0; i < users.length; i += 1) {
-    const user = users[i];
+  async function processUser(user, index) {
     const payload = {
       type: 'set_userinfo',
-      trans_id: `${transPrefix}-${Date.now()}-${i + 1}`,
+      trans_id: `${transPrefix}-${Date.now()}-${index + 1}`,
       cloud_id: targetCloudId,
       data: {
         pin: user.pin,
@@ -179,10 +192,6 @@ async function syncEmployeesToMachine(req, res) {
     try {
       const upstream = await callSetUserInfo(payload);
       const rowSuccess = upstream.ok && upstream.data?.success !== false;
-      if (rowSuccess) {
-        successCount += 1;
-      }
-
       results.push({
         pin: user.pin,
         success: rowSuccess,
@@ -199,23 +208,52 @@ async function syncEmployeesToMachine(req, res) {
     }
   }
 
+  for (let i = 0; i < users.length; i += concurrency) {
+    const batch = users.slice(i, i + concurrency);
+    await Promise.all(batch.map((user, batchIndex) => processUser(user, i + batchIndex)));
+  }
+
+  const successCount = results.filter((item) => item.success).length;
   const hasFailure = successCount !== results.length;
 
-  return res.status(hasFailure ? 207 : 200).json({
-    success: !hasFailure,
-    message: hasFailure
-      ? 'Sebagian user gagal dikirim ke mesin tujuan'
-      : 'Semua user berhasil dikirim ke mesin tujuan',
-    source_cloud_id: sourceCloudId,
-    target_cloud_id: targetCloudId,
-    total: results.length,
-    success_count: successCount,
-    failed_count: results.length - successCount,
-    results,
+  return {
+    statusCode: hasFailure ? 207 : 200,
+    payload: {
+      success: !hasFailure,
+      message: hasFailure
+        ? 'Sebagian user gagal dikirim ke mesin tujuan'
+        : 'Semua user berhasil dikirim ke mesin tujuan',
+      source_cloud_id: sourceCloudId,
+      target_cloud_id: targetCloudId,
+      total: results.length,
+      success_count: successCount,
+      failed_count: results.length - successCount,
+      results,
+    },
+  };
+}
+
+async function getEmployees(req, res) {
+  const sourceCloudId = req.query.source_cloud_id || req.query.cloud_id || null;
+  const limit = Math.max(Number(req.query.limit || 500), 1);
+
+  const records = await getWebhookRecords();
+  const users = extractUsersFromRecords(records, sourceCloudId).slice(0, limit);
+
+  return res.json({
+    success: true,
+    count: users.length,
+    data: users,
   });
+}
+
+async function syncEmployeesToMachine(req, res) {
+  const syncResult = await runEmployeeSync(req.body || {});
+  return res.status(syncResult.statusCode).json(syncResult.payload);
 }
 
 module.exports = {
   getEmployees,
   syncEmployeesToMachine,
+  runEmployeeSync,
 };

@@ -1,5 +1,6 @@
 const fs = require('fs/promises');
 const path = require('path');
+const { getMachineMap } = require('../config/runtimeConfig');
 
 const logsFilePath = path.join(process.cwd(), 'logs', 'data.txt');
 const syncStateFilePath = path.join(process.cwd(), 'logs', 'sync-state.json');
@@ -77,10 +78,7 @@ function normalizeMachineId(req) {
 }
 
 function resolveMachineName(machineId) {
-  const machineMap = {
-    [process.env.MACHINE_1_CLOUD_ID || 'GQ5179635']: process.env.MACHINE_1_NAME || 'VIVO ASSEMBLING 1',
-    [process.env.MACHINE_2_CLOUD_ID || 'GQ5778665']: process.env.MACHINE_2_NAME || 'VIVO ASSEMBLING 2',
-  };
+  const machineMap = getMachineMap();
 
   return machineMap[machineId] || null;
 }
