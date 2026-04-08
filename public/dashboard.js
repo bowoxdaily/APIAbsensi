@@ -218,10 +218,16 @@ function getRawLogSummary(record) {
 }
 
 function renderRawLogsTable(records) {
+  console.log(`[renderRawLogsTable] Starting with ${records.length} records`);
   const tbody = document.getElementById('rawLogsTableBody');
   const detailEl = document.getElementById('rawLogsDetail');
   const countEl = document.getElementById('rawLogsCount');
   const statusEl = document.getElementById('rawLogsStatus');
+
+  if (!tbody || !detailEl || !countEl || !statusEl) {
+    console.error('[renderRawLogsTable] Missing required elements:', { tbody, detailEl, countEl, statusEl });
+    return;
+  }
 
   countEl.textContent = String(records.length);
 
@@ -230,6 +236,7 @@ function renderRawLogsTable(records) {
     detailEl.textContent = 'Tidak ada log yang cocok dengan filter';
     statusEl.textContent = 'Tidak ada data untuk filter yang dipilih';
     selectedRawLogId = null;
+    console.log('[renderRawLogsTable] No records to render');
     return;
   }
 
@@ -250,6 +257,7 @@ function renderRawLogsTable(records) {
   selectedRawLogId = selectedRecord.id;
   detailEl.textContent = pretty(selectedRecord);
   statusEl.textContent = `Menampilkan ${records.length} log terbaru`;
+  console.log(`[renderRawLogsTable] Rendered ${records.length} rows`);
 }
 
 function applyRawLogsFilters() {
@@ -291,6 +299,8 @@ async function loadRawLogs() {
   const query = new URLSearchParams();
   const statusEl = document.getElementById('rawLogsStatus');
 
+  console.log(`[loadRawLogs] Starting. machinId=${machineId}, limit=${limit}`);
+
   if (machineId) {
     query.set('machine_id', machineId);
   }
@@ -299,29 +309,45 @@ async function loadRawLogs() {
   statusEl.textContent = 'Memuat raw logs...';
 
   try {
-    const result = await callApi(`/api/webhook?${query.toString()}`, 'GET');
+    const url = `/api/webhook?${query.toString()}`;
+    console.log(`[loadRawLogs] Calling API: ${url}`);
+    const result = await callApi(url, 'GET');
+    console.log(`[loadRawLogs] API response:`, result);
 
     if (!result.ok || result.data?.success === false) {
       rawLogsCache = [];
       document.getElementById('rawLogsUpdatedAt').textContent = '-';
-      statusEl.textContent = result.data?.message || `Gagal memuat raw logs (HTTP ${result.status})`;
+      const errorMsg = result.data?.message || `Gagal memuat raw logs (HTTP ${result.status})`;
+      statusEl.textContent = errorMsg;
+      console.warn(`[loadRawLogs] Error: ${errorMsg}`);
       renderRawLogsTable([]);
       return;
     }
 
     rawLogsCache = Array.isArray(result.data?.data) ? result.data.data : [];
+    console.log(`[loadRawLogs] Loaded ${rawLogsCache.length} logs into cache`);
     document.getElementById('rawLogsUpdatedAt').textContent = new Date().toLocaleString('id-ID');
-    renderRawLogsTable(applyRawLogsFilters());
+    const filtered = applyRawLogsFilters();
+    console.log(`[loadRawLogs] After filtering: ${filtered.length} logs`);
+    renderRawLogsTable(filtered);
   } catch (error) {
     rawLogsCache = [];
     document.getElementById('rawLogsUpdatedAt').textContent = '-';
     statusEl.textContent = `Gagal memuat raw logs: ${error.message}`;
+    console.error(`[loadRawLogs] Exception:`, error);
     renderRawLogsTable([]);
   }
 }
 
 function bindRawLogsTable() {
+  console.log('[bindRawLogsTable] Starting...');
   const tbody = document.getElementById('rawLogsTableBody');
+  
+  if (!tbody) {
+    console.error('[bindRawLogsTable] rawLogsTableBody element not found!');
+    return;
+  }
+
   tbody.addEventListener('click', (event) => {
     const row = event.target.closest('tr[data-log-id]');
     if (!row) {
@@ -332,9 +358,17 @@ function bindRawLogsTable() {
     renderRawLogsTable(applyRawLogsFilters());
   });
 
-  document.querySelectorAll('[data-raw-log-tab]').forEach((button) => {
-    button.addEventListener('click', () => setRawLogTab(button.dataset.rawLogTab));
+  const tabButtons = document.querySelectorAll('[data-raw-log-tab]');
+  console.log(`[bindRawLogsTable] Found ${tabButtons.length} tab buttons`);
+  
+  tabButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      console.log(`[bindRawLogsTable] Tab clicked:`, button.dataset.rawLogTab);
+      setRawLogTab(button.dataset.rawLogTab);
+    });
   });
+  
+  console.log('[bindRawLogsTable] Done');
 }
 
 async function runSync(forceDryRun) {
