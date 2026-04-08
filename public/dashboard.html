@@ -149,8 +149,64 @@
         <pre id="healthResult" class="result">Belum dicek</pre>
       </article>
 
+      <article class="card raw-log-card">
+        <h3>4. Raw Logs Tracker</h3>
+        <div class="form-grid">
+          <div>
+            <label>Filter Cloud ID</label>
+            <input id="rawLogsMachineId" type="text" placeholder="Kosongkan untuk semua mesin" />
+          </div>
+          <div>
+            <label>Limit</label>
+            <input id="rawLogsLimit" type="number" value="25" min="1" max="200" />
+          </div>
+          <div>
+            <label>Pencarian</label>
+            <input id="rawLogsSearch" type="text" placeholder="Cari pin, nama, trans_id, atau machine" />
+          </div>
+        </div>
+        <div class="tab-row" role="tablist" aria-label="Raw log type filter">
+          <button class="tab-btn is-active" data-raw-log-tab="all" type="button">Semua</button>
+          <button class="tab-btn" data-raw-log-tab="attlog" type="button">Attlog</button>
+          <button class="tab-btn" data-raw-log-tab="get_userinfo" type="button">Get Userinfo</button>
+          <button class="tab-btn" data-raw-log-tab="set_userinfo" type="button">Set Userinfo</button>
+          <button class="tab-btn" data-raw-log-tab="other" type="button">Other</button>
+        </div>
+        <div class="actions">
+          <button id="loadRawLogsBtn" class="btn btn-primary">Load Raw Logs</button>
+          <button id="refreshRawLogsBtn" class="btn btn-ghost">Refresh</button>
+        </div>
+        <div class="meta">
+          <span>Total: <strong id="rawLogsCount">0</strong></span>
+          <span class="meta-separator">|</span>
+          <span>Last update: <strong id="rawLogsUpdatedAt">-</strong></span>
+        </div>
+        <div class="raw-log-layout">
+          <div class="table-wrap raw-log-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Waktu</th>
+                  <th>Machine</th>
+                  <th>Type</th>
+                  <th>PIN</th>
+                  <th>Ringkas</th>
+                </tr>
+              </thead>
+              <tbody id="rawLogsTableBody">
+                <tr><td colspan="5">Belum ada data</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="raw-log-detail">
+            <label>Detail JSON</label>
+            <pre id="rawLogsDetail" class="result">Pilih baris log untuk melihat detail</pre>
+          </div>
+        </div>
+      </article>
+
       <article class="card">
-        <h3>4. Runtime Config (Multi-Mesin)</h3>
+        <h3>5. Runtime Config (Multi-Mesin)</h3>
         <div class="actions">
           <button id="loadRuntimeConfigBtn" class="btn btn-primary">Load Config Aktif</button>
         </div>

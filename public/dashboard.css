@@ -200,6 +200,66 @@ select:focus {
   max-height: 300px;
 }
 
+.meta-separator {
+  margin: 0 8px;
+  color: rgba(148, 163, 184, 0.6);
+}
+
+.tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+
+.tab-btn {
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(30, 41, 59, 0.75);
+  color: var(--text-main);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tab-btn.is-active {
+  border-color: rgba(163, 230, 53, 0.55);
+  background: linear-gradient(90deg, rgba(34, 211, 238, 0.2), rgba(163, 230, 53, 0.2));
+  color: #f8fafc;
+}
+
+.raw-log-card {
+  grid-column: 1 / -1;
+}
+
+.raw-log-layout {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 12px;
+}
+
+.raw-log-table-wrap {
+  max-height: 420px;
+}
+
+.raw-log-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.raw-log-row {
+  cursor: pointer;
+}
+
+.raw-log-row:hover {
+  background: rgba(34, 211, 238, 0.08);
+}
+
+.raw-log-row.is-selected {
+  background: rgba(163, 230, 53, 0.14);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -231,6 +291,10 @@ th {
 @media (max-width: 980px) {
   .hero,
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .raw-log-layout {
     grid-template-columns: 1fr;
   }
 }

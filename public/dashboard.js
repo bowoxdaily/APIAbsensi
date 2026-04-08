@@ -11,6 +11,10 @@ const activeRequests = {
   sync: null,
 };
 
+let rawLogsCache = [];
+let selectedRawLogId = null;
+let rawLogTypeTab = 'all';
+
 function getAuthHeaders() {
   const token = document.getElementById('apiToken').value.trim();
   if (!token) {
@@ -165,6 +169,151 @@ async function loadEmployees() {
     .join('');
 }
 
+function getRawLogType(record) {
+  return String(record?.body?.type || 'other').toLowerCase();
+}
+
+function getRawLogSearchText(record) {
+  const body = record?.body || {};
+  const data = body?.data || {};
+  return [
+    record?.id,
+    record?.machineId,
+    record?.machineName,
+    record?.receivedAt,
+    body?.type,
+    body?.cloud_id,
+    body?.trans_id,
+    data?.pin,
+    data?.name,
+    data?.scan,
+    data?.scan_date,
+    data?.status,
+    data?.status_scan,
+    data?.verify,
+  ]
+    .filter(Boolean)
+    .map((item) => String(item).toLowerCase())
+    .join(' ');
+}
+
+function getRawLogSummary(record) {
+  const type = getRawLogType(record);
+  const data = record?.body?.data || {};
+
+  if (type === 'attlog') {
+    return `${data.pin || '-'} | ${data.scan || data.scan_date || '-'}`;
+  }
+
+  if (type === 'get_userinfo') {
+    return `${data.pin || '-'} | ${data.name || '-'} | ${data.privilege || '0'}`;
+  }
+
+  if (type === 'set_userinfo') {
+    return `status=${data.status || '-'}`;
+  }
+
+  return JSON.stringify(data || {}, null, 0).slice(0, 80);
+}
+
+function renderRawLogsTable(records) {
+  const tbody = document.getElementById('rawLogsTableBody');
+  const detailEl = document.getElementById('rawLogsDetail');
+  const countEl = document.getElementById('rawLogsCount');
+
+  countEl.textContent = String(records.length);
+
+  if (!records.length) {
+    tbody.innerHTML = '<tr><td colspan="5">Belum ada data</td></tr>';
+    detailEl.textContent = 'Tidak ada log yang cocok dengan filter';
+    selectedRawLogId = null;
+    return;
+  }
+
+  tbody.innerHTML = records
+    .map((record) => {
+      const isSelected = record.id === selectedRawLogId;
+      return `<tr class="raw-log-row ${isSelected ? 'is-selected' : ''}" data-log-id="${record.id}">
+        <td>${record.receivedAt || ''}</td>
+        <td>${record.machineName || record.machineId || ''}</td>
+        <td>${getRawLogType(record)}</td>
+        <td>${record.body?.data?.pin || record.body?.pin || ''}</td>
+        <td>${getRawLogSummary(record)}</td>
+      </tr>`;
+    })
+    .join('');
+
+  const selectedRecord = records.find((record) => record.id === selectedRawLogId) || records[0];
+  selectedRawLogId = selectedRecord.id;
+  detailEl.textContent = pretty(selectedRecord);
+}
+
+function applyRawLogsFilters() {
+  const searchTerm = document.getElementById('rawLogsSearch').value.trim().toLowerCase();
+
+  return rawLogsCache.filter((record) => {
+    const type = getRawLogType(record);
+    if (rawLogTypeTab !== 'all') {
+      if (rawLogTypeTab === 'other') {
+        if (type === 'attlog' || type === 'get_userinfo' || type === 'set_userinfo') {
+          return false;
+        }
+      } else if (type !== rawLogTypeTab) {
+        return false;
+      }
+    }
+
+    if (searchTerm && !getRawLogSearchText(record).includes(searchTerm)) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function setRawLogTab(nextTab) {
+  rawLogTypeTab = nextTab;
+
+  document.querySelectorAll('[data-raw-log-tab]').forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.rawLogTab === nextTab);
+  });
+
+  renderRawLogsTable(applyRawLogsFilters());
+}
+
+async function loadRawLogs() {
+  const machineId = document.getElementById('rawLogsMachineId').value.trim();
+  const limit = Number(document.getElementById('rawLogsLimit').value);
+  const query = new URLSearchParams();
+
+  if (machineId) {
+    query.set('machine_id', machineId);
+  }
+  query.set('limit', String(limit));
+
+  const result = await callApi(`/api/webhook?${query.toString()}`, 'GET');
+  rawLogsCache = Array.isArray(result.data?.data) ? result.data.data : [];
+  document.getElementById('rawLogsUpdatedAt').textContent = new Date().toLocaleString('id-ID');
+  renderRawLogsTable(applyRawLogsFilters());
+}
+
+function bindRawLogsTable() {
+  const tbody = document.getElementById('rawLogsTableBody');
+  tbody.addEventListener('click', (event) => {
+    const row = event.target.closest('tr[data-log-id]');
+    if (!row) {
+      return;
+    }
+
+    selectedRawLogId = row.dataset.logId;
+    renderRawLogsTable(applyRawLogsFilters());
+  });
+
+  document.querySelectorAll('[data-raw-log-tab]').forEach((button) => {
+    button.addEventListener('click', () => setRawLogTab(button.dataset.rawLogTab));
+  });
+}
+
 async function runSync(forceDryRun) {
   const requestId = `sync_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   activeRequests.sync = requestId;
@@ -262,6 +411,14 @@ function bindActions() {
   document.getElementById('syncDryRunBtn').addEventListener('click', () => runSync(true));
   document.getElementById('stopSyncBtn').addEventListener('click', stopSync);
   document.getElementById('checkHealthBtn').addEventListener('click', checkHealth);
+  document.getElementById('loadRawLogsBtn').addEventListener('click', loadRawLogs);
+  document.getElementById('refreshRawLogsBtn').addEventListener('click', loadRawLogs);
+  document.getElementById('rawLogsSearch').addEventListener('input', () => renderRawLogsTable(applyRawLogsFilters()));
+  document.getElementById('rawLogsMachineId').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      loadRawLogs();
+    }
+  });
   document.getElementById('loadRuntimeConfigBtn').addEventListener('click', loadRuntimeConfig);
   document.getElementById('saveSyncJobsOverrideBtn').addEventListener('click', saveSyncJobsOverride);
   document.getElementById('clearSyncJobsOverrideBtn').addEventListener('click', clearSyncJobsOverride);
@@ -269,5 +426,8 @@ function bindActions() {
 
 loadLocalDefaults();
 bindActions();
+bindRawLogsTable();
+setRawLogTab('all');
 checkHealth();
 loadRuntimeConfig();
+loadRawLogs();
