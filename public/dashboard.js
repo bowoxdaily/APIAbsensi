@@ -14,6 +14,7 @@ const activeRequests = {
 let rawLogsCache = [];
 let selectedRawLogId = null;
 let rawLogTypeTab = 'all';
+let rawLogsRefreshTimer = null;
 
 function getAuthHeaders() {
   const token = document.getElementById('apiToken').value.trim();
@@ -220,12 +221,14 @@ function renderRawLogsTable(records) {
   const tbody = document.getElementById('rawLogsTableBody');
   const detailEl = document.getElementById('rawLogsDetail');
   const countEl = document.getElementById('rawLogsCount');
+  const statusEl = document.getElementById('rawLogsStatus');
 
   countEl.textContent = String(records.length);
 
   if (!records.length) {
     tbody.innerHTML = '<tr><td colspan="5">Belum ada data</td></tr>';
     detailEl.textContent = 'Tidak ada log yang cocok dengan filter';
+    statusEl.textContent = 'Tidak ada data untuk filter yang dipilih';
     selectedRawLogId = null;
     return;
   }
@@ -246,6 +249,7 @@ function renderRawLogsTable(records) {
   const selectedRecord = records.find((record) => record.id === selectedRawLogId) || records[0];
   selectedRawLogId = selectedRecord.id;
   detailEl.textContent = pretty(selectedRecord);
+  statusEl.textContent = `Menampilkan ${records.length} log terbaru`;
 }
 
 function applyRawLogsFilters() {
@@ -285,16 +289,35 @@ async function loadRawLogs() {
   const machineId = document.getElementById('rawLogsMachineId').value.trim();
   const limit = Number(document.getElementById('rawLogsLimit').value);
   const query = new URLSearchParams();
+  const statusEl = document.getElementById('rawLogsStatus');
 
   if (machineId) {
     query.set('machine_id', machineId);
   }
   query.set('limit', String(limit));
 
-  const result = await callApi(`/api/webhook?${query.toString()}`, 'GET');
-  rawLogsCache = Array.isArray(result.data?.data) ? result.data.data : [];
-  document.getElementById('rawLogsUpdatedAt').textContent = new Date().toLocaleString('id-ID');
-  renderRawLogsTable(applyRawLogsFilters());
+  statusEl.textContent = 'Memuat raw logs...';
+
+  try {
+    const result = await callApi(`/api/webhook?${query.toString()}`, 'GET');
+
+    if (!result.ok || result.data?.success === false) {
+      rawLogsCache = [];
+      document.getElementById('rawLogsUpdatedAt').textContent = '-';
+      statusEl.textContent = result.data?.message || `Gagal memuat raw logs (HTTP ${result.status})`;
+      renderRawLogsTable([]);
+      return;
+    }
+
+    rawLogsCache = Array.isArray(result.data?.data) ? result.data.data : [];
+    document.getElementById('rawLogsUpdatedAt').textContent = new Date().toLocaleString('id-ID');
+    renderRawLogsTable(applyRawLogsFilters());
+  } catch (error) {
+    rawLogsCache = [];
+    document.getElementById('rawLogsUpdatedAt').textContent = '-';
+    statusEl.textContent = `Gagal memuat raw logs: ${error.message}`;
+    renderRawLogsTable([]);
+  }
 }
 
 function bindRawLogsTable() {
@@ -431,3 +454,4 @@ setRawLogTab('all');
 checkHealth();
 loadRuntimeConfig();
 loadRawLogs();
+rawLogsRefreshTimer = setInterval(loadRawLogs, 30000);

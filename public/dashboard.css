@@ -248,6 +248,11 @@ select:focus {
   gap: 8px;
 }
 
+.raw-log-card #rawLogsStatus {
+  min-height: 52px;
+  margin-bottom: 12px;
+}
+
 .raw-log-row {
   cursor: pointer;
 }
