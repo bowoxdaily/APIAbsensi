@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Absensi Control Deck</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/dashboard.css" />
+</head>
+<body>
+  <div class="ambient"></div>
+  <main class="shell">
+    <header class="hero">
+      <div class="hero-left">
+        <p class="kicker">Absensi Control Deck</p>
+        <h1>Kelola Get User dan Sync Mesin dalam Satu Halaman</h1>
+        <p class="subtitle">Tarik user dari mesin A, cek hasil webhook, lalu copy ke mesin B dengan kontrol concurrency.</p>
+      </div>
+      <div class="hero-right card">
+        <h2>Quick Config</h2>
+        <label>API Token Opsional</label>
+        <input id="apiToken" type="text" placeholder="Isi jika endpoint Anda pakai API_TOKEN" />
+        <label>Cloud ID Mesin A</label>
+        <input id="defaultSourceCloudId" type="text" value="GQ5179635" />
+        <label>Cloud ID Mesin B</label>
+        <input id="defaultTargetCloudId" type="text" value="GQ5778665" />
+        <button id="saveDefaultsBtn" class="btn btn-ghost">Simpan Default</button>
+      </div>
+    </header>
+
+    <section class="grid">
+      <article class="card">
+        <h3>1. Get Userinfo Bulk</h3>
+        <div class="form-grid">
+          <div>
+            <label>Cloud ID Sumber</label>
+            <input id="bulkCloudId" type="text" />
+          </div>
+          <div>
+            <label>Start PIN</label>
+            <input id="bulkStartPin" type="number" value="1" min="1" />
+          </div>
+          <div>
+            <label>End PIN</label>
+            <input id="bulkEndPin" type="number" value="1000" min="1" />
+          </div>
+          <div>
+            <label>PIN Width</label>
+            <input id="bulkPinWidth" type="number" value="4" min="0" />
+          </div>
+          <div>
+            <label>Concurrency</label>
+            <input id="bulkConcurrency" type="number" value="5" min="1" max="10" />
+          </div>
+          <div>
+            <label>Dry Run</label>
+            <select id="bulkDryRun">
+              <option value="false" selected>false</option>
+              <option value="true">true</option>
+            </select>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="runBulkBtn" class="btn btn-primary">Jalankan Bulk</button>
+          <button id="dryBulkBtn" class="btn btn-ghost">Dry Run Saja</button>
+          <button id="stopBulkBtn" class="btn btn-danger">Stop Bulk</button>
+        </div>
+        <pre id="bulkResult" class="result">Menunggu eksekusi...</pre>
+      </article>
+
+      <article class="card">
+        <h3>2. Cek Daftar Karyawan</h3>
+        <div class="form-grid">
+          <div>
+            <label>Filter Cloud ID</label>
+            <input id="employeesCloudId" type="text" />
+          </div>
+          <div>
+            <label>Limit</label>
+            <input id="employeesLimit" type="number" value="500" min="1" />
+          </div>
+        </div>
+        <div class="actions">
+          <button id="loadEmployeesBtn" class="btn btn-primary">Load Employees</button>
+        </div>
+        <div class="meta">
+          <span>Total: <strong id="employeeCount">0</strong></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>PIN</th>
+                <th>Nama</th>
+                <th>Priv</th>
+                <th>Finger</th>
+                <th>Face</th>
+              </tr>
+            </thead>
+            <tbody id="employeesTableBody">
+              <tr><td colspan="5">Belum ada data</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card">
+        <h3>3. Sync Mesin A ke Mesin B</h3>
+        <div class="form-grid">
+          <div>
+            <label>Source Cloud ID</label>
+            <input id="syncSourceCloudId" type="text" />
+          </div>
+          <div>
+            <label>Target Cloud ID</label>
+            <input id="syncTargetCloudId" type="text" />
+          </div>
+          <div>
+            <label>Limit</label>
+            <input id="syncLimit" type="number" value="1000" min="1" />
+          </div>
+          <div>
+            <label>Concurrency</label>
+            <input id="syncConcurrency" type="number" value="3" min="1" max="10" />
+          </div>
+          <div>
+            <label>Dry Run</label>
+            <select id="syncDryRun">
+              <option value="false" selected>false</option>
+              <option value="true">true</option>
+            </select>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="syncEmployeesBtn" class="btn btn-primary">Jalankan Sync</button>
+          <button id="syncDryRunBtn" class="btn btn-ghost">Dry Run Sync</button>
+          <button id="stopSyncBtn" class="btn btn-danger">Stop Sync</button>
+        </div>
+        <pre id="syncResult" class="result">Menunggu eksekusi...</pre>
+      </article>
+
+      <article class="card">
+        <h3>Status Service</h3>
+        <div class="actions">
+          <button id="checkHealthBtn" class="btn btn-primary">Cek API Health</button>
+        </div>
+        <pre id="healthResult" class="result">Belum dicek</pre>
+      </article>
+
+      <article class="card">
+        <h3>4. Runtime Config (Multi-Mesin)</h3>
+        <div class="actions">
+          <button id="loadRuntimeConfigBtn" class="btn btn-primary">Load Config Aktif</button>
+        </div>
+        <div class="form-grid">
+          <div>
+            <label>Machine Map Aktif</label>
+            <pre id="machineMapResult" class="result">Belum dimuat</pre>
+          </div>
+          <div>
+            <label>Sync Jobs Aktif</label>
+            <pre id="activeJobsResult" class="result">Belum dimuat</pre>
+          </div>
+        </div>
+
+        <label>Editor Sync Jobs Override (JSON Array)</label>
+        <textarea id="syncJobsEditor" class="json-editor" spellcheck="false">[]</textarea>
+        <div class="actions">
+          <button id="saveSyncJobsOverrideBtn" class="btn btn-primary">Simpan Override</button>
+          <button id="clearSyncJobsOverrideBtn" class="btn btn-ghost">Kosongkan Override</button>
+        </div>
+        <pre id="runtimeUpdateResult" class="result">Belum ada aksi</pre>
+      </article>
+    </section>
+  </main>
+
+  <script src="/dashboard.js" defer></script>
+</body>
+</html>
