@@ -116,6 +116,42 @@ function sortNewestFirst(left, right) {
   return getRecordSortTime(right) - getRecordSortTime(left);
 }
 
+function toBoolean(value) {
+  return String(value).toLowerCase() === 'true';
+}
+
+function mapAttlogRecord(record, includeMeta = false) {
+  const data = record?.body?.data || {};
+  const mapped = {
+    machineName: record?.machineName || null,
+    machineId: record?.machineId || record?.body?.cloud_id || null,
+    pin: data.pin || null,
+    scan: data.scan || data.scan_date || null,
+    verify: typeof data.verify === 'number' ? data.verify : null,
+    status_scan: typeof data.status_scan === 'number' ? data.status_scan : null,
+    photo_url: data.photo_url || null,
+    work_code: data.work_code || null,
+    receivedAt: record?.receivedAt || null,
+  };
+
+  if (includeMeta) {
+    return {
+      ...mapped,
+      meta: {
+        id: record?.id || null,
+        eventId: record?.eventId || null,
+        ip: record?.ip || null,
+        method: record?.method || null,
+        path: record?.path || null,
+        headers: record?.headers || null,
+      },
+      raw_body: record?.body || null,
+    };
+  }
+
+  return mapped;
+}
+
 async function ensureLogFile() {
   await fs.mkdir(path.dirname(logsFilePath), { recursive: true });
   try {
@@ -137,6 +173,7 @@ async function ensureMasterLogFile() {
 async function getAttlog(req, res) {
   await ensureLogFile();
   const dateRange = resolveDateRange(req.query);
+  const includeMeta = toBoolean(req.query.include_meta || 'false');
 
   const raw = await fs.readFile(logsFilePath, 'utf8');
   const data = raw
@@ -151,11 +188,13 @@ async function getAttlog(req, res) {
     })
     .filter(Boolean)
     .filter((record) => matchesDateRange(record, dateRange))
-    .sort(sortNewestFirst);
+    .sort(sortNewestFirst)
+    .map((record) => mapAttlogRecord(record, includeMeta));
 
   return res.json({
     success: true,
     date_range: dateRange,
+    include_meta: includeMeta,
     count: data.length,
     data,
   });

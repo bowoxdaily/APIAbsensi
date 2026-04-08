@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const fs = require('fs/promises');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -12,6 +13,33 @@ const { getActiveSyncJobs } = require('./config/runtimeStore');
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+async function ensureRuntimeFiles() {
+  const logsDir = path.join(__dirname, 'logs');
+  await fs.mkdir(logsDir, { recursive: true });
+
+  const fileDefaults = [
+    { fileName: 'data.txt', content: '' },
+    { fileName: 'attlog.txt', content: '' },
+    { fileName: 'userinfo.txt', content: '' },
+    { fileName: 'other.txt', content: '' },
+    { fileName: 'sync-state.json', content: JSON.stringify({ machines: {} }, null, 2) },
+    { fileName: 'sync-jobs.override.json', content: JSON.stringify({ sync_jobs: [] }, null, 2) },
+  ];
+
+  for (const item of fileDefaults) {
+    const fullPath = path.join(logsDir, item.fileName);
+    try {
+      await fs.access(fullPath);
+    } catch (error) {
+      await fs.writeFile(fullPath, item.content, 'utf8');
+    }
+  }
+}
+
+ensureRuntimeFiles().catch((error) => {
+  console.error(`[bootstrap] gagal menyiapkan file runtime: ${error.message}`);
+});
 
 app.use(helmet());
 app.use(cors());
