@@ -7,6 +7,115 @@ const logsDirPath = path.join(process.cwd(), 'logs');
 const logsFilePath = path.join(logsDirPath, 'attlog.txt');
 const masterLogsFilePath = path.join(logsDirPath, 'data.txt');
 
+function toDateKey(value) {
+  if (!value) {
+    return null;
+  }
+
+  const text = String(value).trim();
+  if (!text) {
+    return null;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return text;
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString().slice(0, 10);
+}
+
+function formatLocalDateKey(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function getDefaultDateRange() {
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  return {
+    start_date: formatLocalDateKey(yesterday),
+    end_date: formatLocalDateKey(today),
+    defaulted: true,
+  };
+}
+
+function resolveDateRange(query = {}) {
+  const startInput = query.start_date || query.startDate || query.from || query.date_from || null;
+  const endInput = query.end_date || query.endDate || query.to || query.date_to || null;
+
+  const startDate = toDateKey(startInput);
+  const endDate = toDateKey(endInput);
+
+  if (!startDate && !endDate) {
+    return getDefaultDateRange();
+  }
+
+  const resolvedStart = startDate || endDate;
+  const resolvedEnd = endDate || startDate;
+
+  if (resolvedStart && resolvedEnd && resolvedStart > resolvedEnd) {
+    return {
+      start_date: resolvedEnd,
+      end_date: resolvedStart,
+      defaulted: false,
+    };
+  }
+
+  return {
+    start_date: resolvedStart,
+    end_date: resolvedEnd,
+    defaulted: false,
+  };
+}
+
+function extractRecordDateKey(record) {
+  return (
+    toDateKey(record?.scan_date) ||
+    toDateKey(record?.scanDate) ||
+    toDateKey(record?.received_at) ||
+    toDateKey(record?.receivedAt) ||
+    toDateKey(record?.fetched_at) ||
+    toDateKey(record?.fetchedAt) ||
+    null
+  );
+}
+
+function matchesDateRange(record, dateRange) {
+  if (!dateRange?.start_date || !dateRange?.end_date) {
+    return true;
+  }
+
+  const dateKey = extractRecordDateKey(record);
+  if (!dateKey) {
+    return false;
+  }
+
+  return dateKey >= dateRange.start_date && dateKey <= dateRange.end_date;
+}
+
+function getRecordSortTime(record) {
+  const value =
+    record?.receivedAt ||
+    record?.received_at ||
+    record?.fetched_at ||
+    record?.fetchedAt ||
+    record?.scan_date ||
+    record?.scanDate ||
+    null;
+  const time = new Date(value || 0).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function sortNewestFirst(left, right) {
+  return getRecordSortTime(right) - getRecordSortTime(left);
+}
+
 async function ensureLogFile() {
   await fs.mkdir(path.dirname(logsFilePath), { recursive: true });
   try {
@@ -27,6 +136,7 @@ async function ensureMasterLogFile() {
 
 async function getAttlog(req, res) {
   await ensureLogFile();
+  const dateRange = resolveDateRange(req.query);
 
   const raw = await fs.readFile(logsFilePath, 'utf8');
   const data = raw
@@ -39,10 +149,13 @@ async function getAttlog(req, res) {
         return null;
       }
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((record) => matchesDateRange(record, dateRange))
+    .sort(sortNewestFirst);
 
   return res.json({
     success: true,
+    date_range: dateRange,
     count: data.length,
     data,
   });
@@ -149,11 +262,13 @@ async function getCombinedAttlog(req, res) {
   const cloudIds = buildRegisteredMachineList(filterCloudIds);
   const includeLogs = String(req.query.include_logs || 'true').toLowerCase() !== 'false';
   const includeSupabase = String(req.query.include_supabase || 'true').toLowerCase() !== 'false';
+  const dateRange = resolveDateRange(req.query);
 
   if (!cloudIds.length) {
     return res.json({
       success: true,
       source: 'empty',
+      date_range: dateRange,
       count: 0,
       machines: [],
       data: [],
@@ -166,6 +281,14 @@ async function getCombinedAttlog(req, res) {
     const supabase = getSupabaseClient();
     const tableName = getSupabaseConfig().table;
     let query = supabase.from(tableName).select('*').in('cloud_id', cloudIds).order('fetched_at', { ascending: false });
+
+    if (dateRange.start_date) {
+      query = query.gte('scan_date', dateRange.start_date);
+    }
+
+    if (dateRange.end_date) {
+      query = query.lte('scan_date', `${dateRange.end_date} 23:59:59`);
+    }
 
     if (limit > 0) {
       query = query.limit(limit);
@@ -199,7 +322,8 @@ async function getCombinedAttlog(req, res) {
 
         return cloudIds.includes(String(machineId));
       })
-      .map(normalizeWebhookAttlogRecord);
+      .map(normalizeWebhookAttlogRecord)
+      .filter((record) => matchesDateRange(record, dateRange));
 
     mergedRows.push(...items);
   }
@@ -215,7 +339,8 @@ async function getCombinedAttlog(req, res) {
 
       return cloudIds.includes(String(machineId));
     })
-    .map(normalizeWebhookAttlogRecord);
+    .map(normalizeWebhookAttlogRecord)
+    .filter((record) => matchesDateRange(record, dateRange));
 
   mergedRows.push(...historicalItems);
 
@@ -225,17 +350,14 @@ async function getCombinedAttlog(req, res) {
     uniqueByKey.set(key, row);
   }
 
-  const ordered = Array.from(uniqueByKey.values()).sort((left, right) => {
-    const leftTime = new Date(left.fetched_at || left.received_at || left.scan_date || 0).getTime();
-    const rightTime = new Date(right.fetched_at || right.received_at || right.scan_date || 0).getTime();
-    return rightTime - leftTime;
-  });
+  const ordered = Array.from(uniqueByKey.values()).sort(sortNewestFirst);
 
   const result = limit > 0 ? ordered.slice(0, limit) : ordered;
 
   return res.json({
     success: true,
     source: includeSupabase && hasSupabaseConfig() ? 'merged' : 'logs',
+    date_range: dateRange,
     count: result.length,
     machines: cloudIds,
     data: result,

@@ -253,6 +253,7 @@ Body JSON contoh mesin 2:
 
 Endpoint lokal ini akan meneruskan request ke Fingerspot dan mengembalikan response dari server Fingerspot di field `upstream`.
 Setiap data attlog yang diterima juga otomatis di-upsert ke Supabase, dan scan webhook juga disimpan ke `logs/attlog.txt`.
+Kalau `start_date` dan `end_date` tidak diisi, backend otomatis memakai rentang hari ini dan kemarin.
 
 Kalau mau ambil scan gabungan dari semua mesin terdaftar, gunakan `GET /api/attlog/combined`.
 

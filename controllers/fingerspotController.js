@@ -27,6 +27,35 @@ function formatDate(date) {
   return date.toISOString().slice(0, 10);
 }
 
+function formatLocalDate(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+function resolveAttlogDateRange(body = {}) {
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  const fallbackStart = formatLocalDate(yesterday);
+  const fallbackEnd = formatLocalDate(today);
+  const hasStartDate = Boolean(body.start_date);
+  const hasEndDate = Boolean(body.end_date);
+  const startDate = hasStartDate ? body.start_date : hasEndDate ? body.end_date : fallbackStart;
+  const endDate = hasEndDate ? body.end_date : hasStartDate ? body.start_date : fallbackEnd;
+
+  if (startDate > endDate) {
+    return {
+      start_date: endDate,
+      end_date: startDate,
+    };
+  }
+
+  return {
+    start_date: startDate,
+    end_date: endDate,
+  };
+}
+
 function addDays(date, days) {
   const next = new Date(date);
   next.setUTCDate(next.getUTCDate() + days);
@@ -459,9 +488,9 @@ async function callGetAttlog(req, res) {
   const payload = {
     trans_id: req.body?.trans_id,
     cloud_id: req.body?.cloud_id,
-    start_date: req.body?.start_date,
-    end_date: req.body?.end_date,
   };
+
+  Object.assign(payload, resolveAttlogDateRange(req.body));
 
   const errors = validateGetAttlogPayload(payload);
   if (errors.length) {
@@ -503,9 +532,9 @@ async function callGetAttlogBulk(req, res) {
   const payload = {
     trans_id: req.body?.trans_id,
     cloud_id: req.body?.cloud_id,
-    start_date: req.body?.start_date,
-    end_date: req.body?.end_date,
   };
+
+  Object.assign(payload, resolveAttlogDateRange(req.body));
 
   const errors = [];
   if (!payload.trans_id) {
