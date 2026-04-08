@@ -2,6 +2,12 @@ const API_BASE_URL = process.env.FINGERSPOT_BASE_URL || 'https://developer.finge
 const FINGERSPOT_API_TOKEN = process.env.FINGERSPOT_API_TOKEN || '';
 const MAX_BULK_DAYS = 60;
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
+const {
+  createRequestId,
+  registerSession,
+  getSession,
+  finishSession,
+} = require('../config/requestRegistry');
 
 function parseDateString(dateStr) {
   if (!dateStr || typeof dateStr !== 'string') {
@@ -327,6 +333,8 @@ async function callGetUserInfoBulk(req, res) {
   const transPrefix = req.body?.trans_prefix || 'userinfo-bulk';
   const dryRun = Boolean(req.body?.dry_run);
   const concurrency = Math.min(Math.max(Number(req.body?.concurrency || 5), 1), 10);
+  const requestId = req.body?.request_id || createRequestId('userinfo');
+  registerSession(requestId, { prefix: 'userinfo-bulk', type: 'userinfo-bulk' });
 
   if (!sourceCloudId) {
     return res.status(400).json({
@@ -357,19 +365,27 @@ async function callGetUserInfoBulk(req, res) {
   }
 
   if (dryRun) {
+    finishSession(requestId, { status: 'completed', cancelled: false, total: pinList.length });
     return res.json({
       success: true,
       message: 'Dry run OK. Tidak ada request yang dikirim ke Fingerspot.',
       count: pinList.length,
       cloud_id: sourceCloudId,
       pins: pinList,
+      request_id: requestId,
     });
   }
 
   const results = [];
   let successCount = 0;
+  let cancelled = false;
 
   async function processPin(pin, index) {
+    if (getSession(requestId)?.cancelled) {
+      cancelled = true;
+      return;
+    }
+
     const payload = {
       trans_id: `${transPrefix}-${Date.now()}-${index + 1}`,
       cloud_id: sourceCloudId,
@@ -400,11 +416,22 @@ async function callGetUserInfoBulk(req, res) {
   }
 
   for (let i = 0; i < pinList.length; i += concurrency) {
+    if (getSession(requestId)?.cancelled) {
+      cancelled = true;
+      break;
+    }
+
     const batch = pinList.slice(i, i + concurrency);
     await Promise.all(batch.map((pin, batchIndex) => processPin(pin, i + batchIndex)));
   }
 
   const hasFailure = successCount !== results.length;
+  finishSession(requestId, {
+    status: cancelled ? 'cancelled' : 'completed',
+    cancelled,
+    total: results.length,
+    successCount,
+  });
 
   return res.status(hasFailure ? 207 : 200).json({
     success: !hasFailure,
@@ -415,6 +442,8 @@ async function callGetUserInfoBulk(req, res) {
     total: results.length,
     success_count: successCount,
     failed_count: results.length - successCount,
+    cancelled,
+    request_id: requestId,
     results,
   });
 }

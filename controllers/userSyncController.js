@@ -1,5 +1,6 @@
 const fs = require('fs/promises');
 const path = require('path');
+const { createRequestId, registerSession, getSession, finishSession } = require('../config/requestRegistry');
 
 const logsFilePath = path.join(process.cwd(), 'logs', 'data.txt');
 const API_BASE_URL = process.env.FINGERSPOT_BASE_URL || 'https://developer.fingerspot.io/api';
@@ -110,6 +111,8 @@ async function runEmployeeSync(rawConfig = {}) {
     limit,
     concurrency,
   } = buildSyncConfig(rawConfig);
+  const requestId = rawConfig.request_id || rawConfig.requestId || createRequestId('sync');
+  registerSession(requestId, { prefix: 'sync', type: 'sync-employees' });
 
   if (!FINGERSPOT_API_TOKEN) {
     return {
@@ -145,6 +148,7 @@ async function runEmployeeSync(rawConfig = {}) {
   const users = extractUsersFromRecords(records, sourceCloudId).slice(0, limit);
 
   if (!users.length) {
+    finishSession(requestId, { status: 'completed', cancelled: false, total: 0 });
     return {
       statusCode: 404,
       payload: {
@@ -152,11 +156,13 @@ async function runEmployeeSync(rawConfig = {}) {
         message: 'Tidak ada data userinfo dari mesin sumber. Jalankan get_userinfo dulu sampai webhook masuk.',
         count: 0,
         data: [],
+        request_id: requestId,
       },
     };
   }
 
   if (dryRun) {
+    finishSession(requestId, { status: 'completed', cancelled: false, total: users.length });
     return {
       statusCode: 200,
       payload: {
@@ -165,13 +171,20 @@ async function runEmployeeSync(rawConfig = {}) {
         count: users.length,
         target_cloud_id: targetCloudId,
         concurrency,
+        request_id: requestId,
         data: users,
       },
     };
   }
 
   const results = [];
+  let cancelled = false;
   async function processUser(user, index) {
+    if (getSession(requestId)?.cancelled) {
+      cancelled = true;
+      return;
+    }
+
     const payload = {
       type: 'set_userinfo',
       trans_id: `${transPrefix}-${Date.now()}-${index + 1}`,
@@ -209,12 +222,23 @@ async function runEmployeeSync(rawConfig = {}) {
   }
 
   for (let i = 0; i < users.length; i += concurrency) {
+    if (getSession(requestId)?.cancelled) {
+      cancelled = true;
+      break;
+    }
+
     const batch = users.slice(i, i + concurrency);
     await Promise.all(batch.map((user, batchIndex) => processUser(user, i + batchIndex)));
   }
 
   const successCount = results.filter((item) => item.success).length;
   const hasFailure = successCount !== results.length;
+  finishSession(requestId, {
+    status: cancelled ? 'cancelled' : 'completed',
+    cancelled,
+    total: results.length,
+    successCount,
+  });
 
   return {
     statusCode: hasFailure ? 207 : 200,
@@ -225,9 +249,11 @@ async function runEmployeeSync(rawConfig = {}) {
         : 'Semua user berhasil dikirim ke mesin tujuan',
       source_cloud_id: sourceCloudId,
       target_cloud_id: targetCloudId,
+      request_id: requestId,
       total: results.length,
       success_count: successCount,
       failed_count: results.length - successCount,
+      cancelled,
       results,
     },
   };

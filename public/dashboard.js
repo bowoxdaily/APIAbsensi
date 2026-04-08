@@ -6,6 +6,11 @@ function parseBool(value) {
   return String(value) === 'true';
 }
 
+const activeRequests = {
+  bulk: null,
+  sync: null,
+};
+
 function getAuthHeaders() {
   const token = document.getElementById('apiToken').value.trim();
   if (!token) {
@@ -43,6 +48,14 @@ async function callApi(url, method = 'GET', body) {
     status: response.status,
     data,
   };
+}
+
+async function cancelRequest(requestId) {
+  if (!requestId) {
+    return null;
+  }
+
+  return callApi(`/api/requests/${encodeURIComponent(requestId)}/cancel`, 'POST');
 }
 
 function applyDefaultsToForm() {
@@ -86,6 +99,8 @@ function loadLocalDefaults() {
 }
 
 async function runBulk(forceDryRun) {
+  const requestId = `bulk_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  activeRequests.bulk = requestId;
   const body = {
     cloud_id: document.getElementById('bulkCloudId').value.trim(),
     start_pin: Number(document.getElementById('bulkStartPin').value),
@@ -94,12 +109,26 @@ async function runBulk(forceDryRun) {
     trans_prefix: 'userinfo-bulk-ui',
     concurrency: Number(document.getElementById('bulkConcurrency').value),
     dry_run: forceDryRun === true ? true : parseBool(document.getElementById('bulkDryRun').value),
+    request_id: requestId,
   };
 
   const resultEl = document.getElementById('bulkResult');
   resultEl.textContent = 'Sedang kirim request bulk...';
   const res = await callApi('/api/fingerspot/get-userinfo-bulk', 'POST', body);
   resultEl.textContent = pretty({ status: res.status, ...res.data });
+  activeRequests.bulk = res.data?.request_id || null;
+}
+
+async function stopBulk() {
+  const resultEl = document.getElementById('bulkResult');
+  const response = await cancelRequest(activeRequests.bulk);
+
+  if (!response) {
+    resultEl.textContent = 'Tidak ada bulk request aktif';
+    return;
+  }
+
+  resultEl.textContent = pretty({ status: response.status, ...response.data });
 }
 
 async function loadEmployees() {
@@ -137,6 +166,8 @@ async function loadEmployees() {
 }
 
 async function runSync(forceDryRun) {
+  const requestId = `sync_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  activeRequests.sync = requestId;
   const body = {
     source_cloud_id: document.getElementById('syncSourceCloudId').value.trim(),
     target_cloud_id: document.getElementById('syncTargetCloudId').value.trim(),
@@ -144,12 +175,26 @@ async function runSync(forceDryRun) {
     limit: Number(document.getElementById('syncLimit').value),
     concurrency: Number(document.getElementById('syncConcurrency').value),
     dry_run: forceDryRun === true ? true : parseBool(document.getElementById('syncDryRun').value),
+    request_id: requestId,
   };
 
   const resultEl = document.getElementById('syncResult');
   resultEl.textContent = 'Sedang menjalankan sync...';
   const res = await callApi('/api/fingerspot/sync-employees', 'POST', body);
   resultEl.textContent = pretty({ status: res.status, ...res.data });
+  activeRequests.sync = res.data?.request_id || null;
+}
+
+async function stopSync() {
+  const resultEl = document.getElementById('syncResult');
+  const response = await cancelRequest(activeRequests.sync);
+
+  if (!response) {
+    resultEl.textContent = 'Tidak ada sync request aktif';
+    return;
+  }
+
+  resultEl.textContent = pretty({ status: response.status, ...response.data });
 }
 
 async function checkHealth() {
@@ -211,9 +256,11 @@ function bindActions() {
 
   document.getElementById('runBulkBtn').addEventListener('click', () => runBulk(false));
   document.getElementById('dryBulkBtn').addEventListener('click', () => runBulk(true));
+  document.getElementById('stopBulkBtn').addEventListener('click', stopBulk);
   document.getElementById('loadEmployeesBtn').addEventListener('click', loadEmployees);
   document.getElementById('syncEmployeesBtn').addEventListener('click', () => runSync(false));
   document.getElementById('syncDryRunBtn').addEventListener('click', () => runSync(true));
+  document.getElementById('stopSyncBtn').addEventListener('click', stopSync);
   document.getElementById('checkHealthBtn').addEventListener('click', checkHealth);
   document.getElementById('loadRuntimeConfigBtn').addEventListener('click', loadRuntimeConfig);
   document.getElementById('saveSyncJobsOverrideBtn').addEventListener('click', saveSyncJobsOverride);

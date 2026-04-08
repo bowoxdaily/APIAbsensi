@@ -171,6 +171,11 @@ select:focus {
   border: 1px solid rgba(148, 163, 184, 0.35);
 }
 
+.btn-danger {
+  color: #fff1f2;
+  background: linear-gradient(90deg, #ef4444, #f97316);
+}
+
 .result {
   margin: 0;
   min-height: 96px;

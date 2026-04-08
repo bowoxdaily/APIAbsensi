@@ -24,6 +24,7 @@ const {
   updateSyncJobs,
   getSyncJobsOverride,
 } = require('../controllers/runtimeController');
+const { cancelSession, getSession } = require('../config/requestRegistry');
 
 const router = express.Router();
 
@@ -46,5 +47,21 @@ router.post('/fingerspot/sync-employees', syncEmployeesToMachine);
 router.get('/runtime/config', getRuntimeConfig);
 router.get('/runtime/sync-jobs-override', getSyncJobsOverride);
 router.put('/runtime/sync-jobs-override', updateSyncJobs);
+router.get('/requests/:requestId', (req, res) => {
+  const session = getSession(req.params.requestId);
+  if (!session) {
+    return res.status(404).json({ success: false, message: 'Request tidak ditemukan' });
+  }
+
+  return res.json({ success: true, data: session });
+});
+router.post('/requests/:requestId/cancel', (req, res) => {
+  const session = cancelSession(req.params.requestId);
+  if (!session) {
+    return res.status(404).json({ success: false, message: 'Request tidak ditemukan' });
+  }
+
+  return res.json({ success: true, message: 'Request dibatalkan', data: session });
+});
 
 module.exports = router;
