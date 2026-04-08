@@ -8,7 +8,7 @@ const {
   getSyncState,
   healthCheck,
 } = require('../controllers/webhookController');
-const { getAttlog } = require('../controllers/attlogController');
+const { getAttlog, getCombinedAttlog } = require('../controllers/attlogController');
 const {
   callGetUserInfo,
   callGetUserInfoBulk,
@@ -36,6 +36,7 @@ router.get('/sync', getSyncFeed);
 router.get('/sync/state', getSyncState);
 router.post('/sync/ack', markMachineSynced);
 router.get('/attlog', getAttlog);
+router.get('/attlog/combined', getCombinedAttlog);
 router.post('/fingerspot/get-userinfo', callGetUserInfo);
 router.post('/fingerspot/get-attlog', callGetAttlog);
 router.post('/fingerspot/get-attlog-bulk', callGetAttlogBulk);

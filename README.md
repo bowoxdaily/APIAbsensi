@@ -1,8 +1,15 @@
 # Project Absensi Webhook API
 
-API ini menerima webhook absensi dari Fingerspot dan menyimpan setiap payload ke `logs/data.txt` dalam format JSON per baris.
+API ini menerima webhook absensi dari Fingerspot dan menyimpan setiap payload ke `logs/data.txt` sebagai arsip umum, lalu memisahkan data scan dan userinfo ke file khusus.
 
 Untuk kasus 2 mesin, backend ini berperan sebagai pusat sinkron. Setiap event dari mesin A dan mesin B disimpan dengan `machineId`, lalu Laravel bisa mengambil feed perubahan dari endpoint sync untuk mendorong data ke sistem lain atau menyimpan status cursor terakhir.
+
+Struktur file log sekarang:
+
+- `logs/attlog.txt` untuk scan absensi (`type: attlog`)
+- `logs/userinfo.txt` untuk `get_userinfo` dan `set_userinfo`
+- `logs/other.txt` untuk event lain
+- `logs/data.txt` tetap menjadi arsip semua event
 
 ## Instalasi
 
@@ -75,12 +82,12 @@ Jika `SYNC_JOBS_JSON` kosong, sistem akan fallback ke mode lama (`SYNC_SOURCE_CL
 
 - `GET /api/health` - cek service aktif
 - `POST /api/webhook` - simpan webhook
-- `GET /api/webhook` - baca semua webhook terbaru
+- `GET /api/webhook` - baca semua webhook terbaru dari arsip campuran
 - `GET /api/webhook/:id` - baca webhook berdasarkan ID
 - `GET /api/sync` - ambil data dari mesin lain untuk disinkronkan
 - `GET /api/sync/state` - lihat cursor sinkron tiap mesin
 - `POST /api/sync/ack` - simpan cursor terakhir per mesin
-- `GET /api/attlog` - baca semua data absensi yang tersimpan
+- `GET /api/attlog` - baca scan attlog dari `logs/attlog.txt`
 - `POST /api/fingerspot/get-attlog` - proxy request ke API Fingerspot `get_attlog`
 - `POST /api/fingerspot/get-attlog-bulk` - ambil attlog rentang panjang (max 60 hari) dengan auto-split 2 hari
 - `POST /api/fingerspot/get-userinfo` - kirim perintah `get_userinfo` ke Fingerspot
@@ -125,7 +132,7 @@ Catatan:
 
 ## Get Semua Karyawan Dari Webhook
 
-Endpoint ini mengambil semua user yang sudah pernah masuk lewat callback `get_userinfo`.
+Endpoint ini mengambil semua user yang sudah pernah masuk lewat callback `get_userinfo` atau `set_userinfo`.
 
 - Method: `GET`
 - URL: `http://localhost:3000/api/employees?source_cloud_id=GQ5179635`
@@ -245,7 +252,9 @@ Body JSON contoh mesin 2:
 ```
 
 Endpoint lokal ini akan meneruskan request ke Fingerspot dan mengembalikan response dari server Fingerspot di field `upstream`.
-Setiap data attlog yang diterima juga otomatis di-upsert ke Supabase, dan statusnya terlihat di field `db` pada response.
+Setiap data attlog yang diterima juga otomatis di-upsert ke Supabase, dan scan webhook juga disimpan ke `logs/attlog.txt`.
+
+Kalau mau ambil scan gabungan dari semua mesin terdaftar, gunakan `GET /api/attlog/combined`.
 
 ## Test Get Attlog Bulk (Auto Split 2 Hari)
 

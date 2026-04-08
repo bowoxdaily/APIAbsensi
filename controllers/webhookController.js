@@ -3,6 +3,9 @@ const path = require('path');
 const { getMachineMap } = require('../config/runtimeConfig');
 
 const logsFilePath = path.join(process.cwd(), 'logs', 'data.txt');
+const attlogFilePath = path.join(process.cwd(), 'logs', 'attlog.txt');
+const userinfoFilePath = path.join(process.cwd(), 'logs', 'userinfo.txt');
+const otherFilePath = path.join(process.cwd(), 'logs', 'other.txt');
 const syncStateFilePath = path.join(process.cwd(), 'logs', 'sync-state.json');
 const API_TOKEN = process.env.API_TOKEN || '';
 const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN || '';
@@ -14,6 +17,34 @@ async function ensureLogFile() {
   } catch (error) {
     await fs.writeFile(logsFilePath, '', 'utf8');
   }
+}
+
+async function ensureNamedLogFile(filePath) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await fs.access(filePath);
+  } catch (error) {
+    await fs.writeFile(filePath, '', 'utf8');
+  }
+}
+
+async function appendJsonLine(filePath, payload) {
+  await ensureNamedLogFile(filePath);
+  await fs.appendFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');
+}
+
+function resolveWebhookLogFilePath(body = {}) {
+  const type = String(body?.type || '').toLowerCase();
+
+  if (type === 'attlog') {
+    return attlogFilePath;
+  }
+
+  if (type === 'get_userinfo' || type === 'set_userinfo' || type === 'userinfo') {
+    return userinfoFilePath;
+  }
+
+  return otherFilePath;
 }
 
 async function ensureSyncStateFile() {
@@ -136,6 +167,7 @@ async function storeWebhook(req, res) {
 
   await ensureLogFile();
   await fs.appendFile(logsFilePath, `${JSON.stringify(payload)}\n`, 'utf8');
+  await appendJsonLine(resolveWebhookLogFilePath(req.body), payload);
 
   return res.status(201).json({
     success: true,
