@@ -194,6 +194,7 @@ FINGERSPOT_BASE_URL=https://developer.fingerspot.io/api
 SUPABASE_URL=https://xxxx.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=isi_service_role_key
 SUPABASE_TABLE=attlogs
+SUPABASE_EMPLOYEES_TABLE=employees
 ```
 
 2. Buat tabel Supabase (SQL Editor):
@@ -214,6 +215,24 @@ create table if not exists public.attlogs (
   raw_payload jsonb,
   fetched_at timestamptz default now(),
   created_at timestamptz default now()
+);
+
+create table if not exists public.employees (
+  id bigserial primary key,
+  source_key text not null unique,
+  source_cloud_id text not null,
+  pin text not null,
+  name text,
+  privilege text,
+  password text,
+  rfid text,
+  finger text,
+  face text,
+  vein text,
+  template text,
+  raw_payload jsonb,
+  received_at timestamptz default now(),
+  updated_at timestamptz default now()
 );
 ```
 
@@ -253,6 +272,7 @@ Body JSON contoh mesin 2:
 
 Endpoint lokal ini akan meneruskan request ke Fingerspot dan mengembalikan response dari server Fingerspot di field `upstream`.
 Setiap data attlog yang diterima juga otomatis di-upsert ke Supabase, dan scan webhook juga disimpan ke `logs/attlog.txt`.
+Data user dari webhook `get_userinfo` juga otomatis di-upsert ke tabel `employees`.
 Kalau `start_date` dan `end_date` tidak diisi, backend otomatis memakai rentang hari ini dan kemarin.
 
 Kalau mau ambil scan gabungan dari semua mesin terdaftar, gunakan `GET /api/attlog/combined`.

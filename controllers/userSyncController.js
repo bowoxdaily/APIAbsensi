@@ -1,6 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { createRequestId, registerSession, getSession, finishSession } = require('../config/requestRegistry');
+const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
 
 const logsFilePath = path.join(process.cwd(), 'logs', 'data.txt');
 const API_BASE_URL = process.env.FINGERSPOT_BASE_URL || 'https://developer.fingerspot.io/api';
@@ -263,11 +264,46 @@ async function getEmployees(req, res) {
   const sourceCloudId = req.query.source_cloud_id || req.query.cloud_id || null;
   const limit = Math.max(Number(req.query.limit || 500), 1);
 
+  if (hasSupabaseConfig()) {
+    const supabase = getSupabaseClient();
+    const tableName = getSupabaseConfig().employeesTable;
+    let query = supabase.from(tableName).select('*').order('received_at', { ascending: false }).limit(limit);
+
+    if (sourceCloudId) {
+      query = query.eq('source_cloud_id', sourceCloudId);
+    }
+
+    const { data, error } = await query;
+    if (!error && Array.isArray(data)) {
+      const users = data.map((item) => ({
+        pin: item.pin || '',
+        name: item.name || '',
+        privilege: String(item.privilege || '0'),
+        password: item.password || '',
+        rfid: item.rfid || '',
+        finger: String(item.finger || '0'),
+        face: String(item.face || '0'),
+        vein: String(item.vein || '0'),
+        template: item.template || '',
+        source_cloud_id: item.source_cloud_id || null,
+        received_at: item.received_at || null,
+      }));
+
+      return res.json({
+        success: true,
+        source: 'supabase',
+        count: users.length,
+        data: users,
+      });
+    }
+  }
+
   const records = await getWebhookRecords();
   const users = extractUsersFromRecords(records, sourceCloudId).slice(0, limit);
 
   return res.json({
     success: true,
+    source: 'logs',
     count: users.length,
     data: users,
   });

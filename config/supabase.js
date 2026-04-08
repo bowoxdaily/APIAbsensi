@@ -3,12 +3,14 @@ const { createClient } = require('@supabase/supabase-js');
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const SUPABASE_TABLE = process.env.SUPABASE_TABLE || 'attlogs';
+const SUPABASE_EMPLOYEES_TABLE = process.env.SUPABASE_EMPLOYEES_TABLE || 'employees';
 
 function getSupabaseConfig() {
   return {
     url: SUPABASE_URL,
     key: SUPABASE_SERVICE_ROLE_KEY,
     table: SUPABASE_TABLE,
+    employeesTable: SUPABASE_EMPLOYEES_TABLE,
   };
 }
 

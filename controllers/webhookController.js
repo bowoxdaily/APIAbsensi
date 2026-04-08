@@ -1,6 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { getMachineMap } = require('../config/runtimeConfig');
+const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
 
 const logsFilePath = path.join(process.cwd(), 'logs', 'data.txt');
 const attlogFilePath = path.join(process.cwd(), 'logs', 'attlog.txt');
@@ -125,6 +126,87 @@ function getRawEventId(req, payload) {
   );
 }
 
+function buildAttlogRow(payload) {
+  const data = payload?.body?.data || {};
+  const cloudId = payload?.machineId || payload?.body?.cloud_id || payload?.body?.cloudId || null;
+
+  if (String(payload?.body?.type || '').toLowerCase() !== 'attlog') {
+    return null;
+  }
+
+  if (!cloudId || !data.pin || !(data.scan || data.scan_date)) {
+    return null;
+  }
+
+  return {
+    source_key: `webhook|${payload.id}`,
+    cloud_id: String(cloudId),
+    trans_id: payload?.body?.trans_id || null,
+    pin: String(data.pin),
+    scan_date: data.scan || data.scan_date,
+    verify: typeof data.verify === 'number' ? data.verify : null,
+    status_scan: typeof data.status_scan === 'number' ? data.status_scan : null,
+    photo_url: data.photo_url || null,
+    raw_payload: payload.body || null,
+    fetched_at: payload.receivedAt || new Date().toISOString(),
+  };
+}
+
+function buildEmployeeRow(payload) {
+  const type = String(payload?.body?.type || '').toLowerCase();
+  const data = payload?.body?.data || {};
+  const cloudId = payload?.machineId || payload?.body?.cloud_id || payload?.body?.cloudId || null;
+
+  if (type !== 'get_userinfo') {
+    return null;
+  }
+
+  if (!cloudId || !data.pin) {
+    return null;
+  }
+
+  return {
+    source_key: `${String(cloudId)}|${String(data.pin)}`,
+    source_cloud_id: String(cloudId),
+    pin: String(data.pin),
+    name: data.name || '',
+    privilege: String(data.privilege || '0'),
+    password: data.password || '',
+    rfid: data.rfid || '',
+    finger: String(data.finger || '0'),
+    face: String(data.face || '0'),
+    vein: String(data.vein || '0'),
+    template: data.template || '',
+    raw_payload: payload.body || null,
+    received_at: payload.receivedAt || new Date().toISOString(),
+  };
+}
+
+async function persistWebhookToSupabase(payload) {
+  if (!hasSupabaseConfig()) {
+    return;
+  }
+
+  const supabase = getSupabaseClient();
+  const config = getSupabaseConfig();
+  const attlogRow = buildAttlogRow(payload);
+  const employeeRow = buildEmployeeRow(payload);
+
+  if (attlogRow) {
+    const { error } = await supabase.from(config.table).upsert(attlogRow, { onConflict: 'source_key' });
+    if (error) {
+      console.error(`[webhook-db] gagal simpan attlog: ${error.message}`);
+    }
+  }
+
+  if (employeeRow) {
+    const { error } = await supabase.from(config.employeesTable).upsert(employeeRow, { onConflict: 'source_key' });
+    if (error) {
+      console.error(`[webhook-db] gagal simpan employee: ${error.message}`);
+    }
+  }
+}
+
 async function readJsonFile(filePath, fallback) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
@@ -168,6 +250,7 @@ async function storeWebhook(req, res) {
   await ensureLogFile();
   await fs.appendFile(logsFilePath, `${JSON.stringify(payload)}\n`, 'utf8');
   await appendJsonLine(resolveWebhookLogFilePath(req.body), payload);
+  await persistWebhookToSupabase(payload);
 
   return res.status(201).json({
     success: true,
