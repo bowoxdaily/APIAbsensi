@@ -71,10 +71,12 @@ SYNC_CRON_INTERVAL_MINUTES=5
 
 ```env
 SYNC_JOBS_JSON=[
-  {"source_cloud_id":"GQ5179635","target_cloud_id":"GQ5778665","trans_prefix":"sync-1-2","limit":1000,"concurrency":3,"dry_run":false},
-  {"source_cloud_id":"GQ1234567","target_cloud_id":"GQ5778665","trans_prefix":"sync-3-2","limit":1000,"concurrency":3,"dry_run":false}
+  {"source_cloud_id":"GQ5179635","target_cloud_id":"GQ5778665","trans_prefix":"sync-1-2","start_pin":1,"end_pin":500,"limit":1000,"concurrency":3,"dry_run":false},
+  {"source_cloud_id":"GQ1234567","target_cloud_id":"GQ5778665","trans_prefix":"sync-3-2","start_pin":1,"end_pin":500,"limit":1000,"concurrency":3,"dry_run":false}
 ]
 ```
+
+Jika ingin pakai mode lama, `start_pin` dan `end_pin` boleh dikosongkan. Kalau diisi, sync hanya memproses PIN dalam range tersebut dan tetap berjalan berurutan dari PIN terkecil dalam range.
 
 Jika `SYNC_JOBS_JSON` kosong, sistem akan fallback ke mode lama (`SYNC_SOURCE_CLOUD_ID` dan `SYNC_TARGET_CLOUD_ID`).
 

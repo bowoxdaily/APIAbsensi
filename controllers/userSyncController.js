@@ -6,6 +6,9 @@ const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../
 const logsFilePath = path.join(process.cwd(), 'logs', 'data.txt');
 const API_BASE_URL = process.env.FINGERSPOT_BASE_URL || 'https://developer.fingerspot.io/api';
 const FINGERSPOT_API_TOKEN = process.env.FINGERSPOT_API_TOKEN || '';
+const SYNC_RECHECK_TIMEOUT_MS = Math.max(Number(process.env.SYNC_RECHECK_TIMEOUT_MS || 15000), 1000);
+const SYNC_RECHECK_POLL_MS = Math.max(Number(process.env.SYNC_RECHECK_POLL_MS || 1500), 250);
+const SYNC_RECHECK_MAX_GAP = Math.max(Number(process.env.SYNC_RECHECK_MAX_GAP || 100), 1);
 
 async function ensureLogFile() {
   await fs.mkdir(path.dirname(logsFilePath), { recursive: true });
@@ -64,7 +67,134 @@ function extractUsersFromRecords(records, sourceCloudId) {
     });
   }
 
-  return Array.from(latestByPin.values()).sort((a, b) => a.pin.localeCompare(b.pin, 'en'));
+  return Array.from(latestByPin.values()).sort((a, b) => comparePins(a.pin, b.pin));
+}
+
+function isNumericPin(pin) {
+  return /^\d+$/.test(String(pin || ''));
+}
+
+function comparePins(leftPin, rightPin) {
+  const left = String(leftPin);
+  const right = String(rightPin);
+
+  if (isNumericPin(left) && isNumericPin(right)) {
+    return Number(left) - Number(right);
+  }
+
+  return left.localeCompare(right, 'en', { numeric: true, sensitivity: 'base' });
+}
+
+function buildMissingNumericPins(users) {
+  if (!Array.isArray(users) || users.length < 2) {
+    return [];
+  }
+
+  if (!users.every((user) => isNumericPin(user.pin))) {
+    return [];
+  }
+
+  const pins = users.map((user) => Number(user.pin)).sort((a, b) => a - b);
+  const missing = new Set();
+
+  for (let index = 1; index < pins.length; index += 1) {
+    const previousPin = pins[index - 1];
+    const currentPin = pins[index];
+    const gapSize = currentPin - previousPin - 1;
+
+    if (gapSize <= 0 || gapSize > SYNC_RECHECK_MAX_GAP) {
+      continue;
+    }
+
+    for (let pin = previousPin + 1; pin < currentPin; pin += 1) {
+      missing.add(String(pin));
+    }
+  }
+
+  return Array.from(missing);
+}
+
+function buildUserFromRecord(record) {
+  return {
+    pin: String(record.body.data.pin),
+    name: record.body.data.name || '',
+    privilege: String(record.body.data.privilege || '0'),
+    password: record.body.data.password || '',
+    rfid: record.body.data.rfid || '',
+    finger: String(record.body.data.finger || '0'),
+    face: String(record.body.data.face || '0'),
+    vein: String(record.body.data.vein || '0'),
+    template: record.body.data.template || '',
+    source_cloud_id: record.body.cloud_id || null,
+    received_at: record.receivedAt || null,
+  };
+}
+
+async function requestSourceUserInfo(sourceCloudId, pin, transPrefix, index) {
+  const response = await fetch(`${API_BASE_URL}/get_userinfo`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${FINGERSPOT_API_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      trans_id: `${transPrefix}-recheck-${Date.now()}-${index + 1}`,
+      cloud_id: sourceCloudId,
+      pin,
+    }),
+  });
+
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch (error) {
+    data = { raw: text };
+  }
+
+  return {
+    status: response.status,
+    ok: response.ok,
+    data,
+  };
+}
+
+async function waitForRecheckedPins(sourceCloudId, expectedPins, startedAtIso) {
+  const expectedSet = new Set(expectedPins.map((pin) => String(pin)));
+  const foundPins = new Map();
+  const startedAtMs = new Date(startedAtIso).getTime();
+  const deadline = Date.now() + SYNC_RECHECK_TIMEOUT_MS;
+
+  while (Date.now() < deadline && foundPins.size < expectedSet.size) {
+    const records = await getWebhookRecords();
+    for (const record of records) {
+      if (String(record?.body?.type || '').toLowerCase() !== 'get_userinfo') {
+        continue;
+      }
+
+      if (String(record?.body?.cloud_id || '') !== String(sourceCloudId)) {
+        continue;
+      }
+
+      const receivedAtMs = new Date(record.receivedAt || 0).getTime();
+      if (!Number.isFinite(receivedAtMs) || receivedAtMs < startedAtMs) {
+        continue;
+      }
+
+      const pin = String(record?.body?.data?.pin || '');
+      if (!expectedSet.has(pin) || foundPins.has(pin)) {
+        continue;
+      }
+
+      foundPins.set(pin, buildUserFromRecord(record));
+    }
+
+    if (foundPins.size < expectedSet.size) {
+      await new Promise((resolve) => setTimeout(resolve, SYNC_RECHECK_POLL_MS));
+    }
+  }
+
+  return Array.from(foundPins.values());
 }
 
 async function callSetUserInfo(payload) {
@@ -97,10 +227,39 @@ function buildSyncConfig(input = {}) {
     sourceCloudId: input.source_cloud_id || input.sourceCloudId || null,
     targetCloudId: input.target_cloud_id || input.targetCloudId || null,
     transPrefix: input.trans_prefix || input.transPrefix || 'sync-user',
+    startPin: input.start_pin ?? input.startPin ?? input.pin_start ?? input.pinStart ?? null,
+    endPin: input.end_pin ?? input.endPin ?? input.pin_end ?? input.pinEnd ?? null,
     dryRun: Boolean(input.dry_run ?? input.dryRun),
     limit: Math.max(Number(input.limit || 1000), 1),
     concurrency: Math.min(Math.max(Number(input.concurrency || 3), 1), 10),
   };
+}
+
+function normalizePinBoundary(value) {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  const trimmed = String(value).trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed;
+}
+
+function isPinWithinRange(pin, startPin, endPin) {
+  const normalizedPin = String(pin);
+
+  if (startPin !== null && comparePins(normalizedPin, startPin) < 0) {
+    return false;
+  }
+
+  if (endPin !== null && comparePins(normalizedPin, endPin) > 0) {
+    return false;
+  }
+
+  return true;
 }
 
 async function runEmployeeSync(rawConfig = {}) {
@@ -108,6 +267,8 @@ async function runEmployeeSync(rawConfig = {}) {
     sourceCloudId,
     targetCloudId,
     transPrefix,
+    startPin,
+    endPin,
     dryRun,
     limit,
     concurrency,
@@ -146,7 +307,38 @@ async function runEmployeeSync(rawConfig = {}) {
   }
 
   const records = await getWebhookRecords();
-  const users = extractUsersFromRecords(records, sourceCloudId).slice(0, limit);
+  const normalizedStartPin = normalizePinBoundary(startPin);
+  const normalizedEndPin = normalizePinBoundary(endPin);
+  const initialUsers = extractUsersFromRecords(records, sourceCloudId)
+    .filter((user) => isPinWithinRange(user.pin, normalizedStartPin, normalizedEndPin))
+    .slice(0, limit);
+  const missingPins = buildMissingNumericPins(initialUsers);
+  const recheckedPins = [];
+  let users = initialUsers;
+
+  if (missingPins.length) {
+    const recheckStartedAt = new Date().toISOString();
+    for (let i = 0; i < missingPins.length; i += 1) {
+      const pin = missingPins[i];
+      try {
+        const upstream = await requestSourceUserInfo(sourceCloudId, pin, transPrefix, i);
+        if (upstream.ok) {
+          recheckedPins.push(pin);
+        }
+      } catch (error) {
+        console.error(`[sync-userinfo] recheck pin ${pin} gagal: ${error.message}`);
+      }
+    }
+
+    const recheckedUsers = await waitForRecheckedPins(sourceCloudId, missingPins, recheckStartedAt);
+    if (recheckedUsers.length) {
+      const mergedUsers = new Map(users.map((user) => [String(user.pin), user]));
+      for (const user of recheckedUsers) {
+        mergedUsers.set(String(user.pin), user);
+      }
+      users = Array.from(mergedUsers.values()).sort((a, b) => comparePins(a.pin, b.pin)).slice(0, limit);
+    }
+  }
 
   if (!users.length) {
     finishSession(requestId, { status: 'completed', cancelled: false, total: 0 });
@@ -171,6 +363,8 @@ async function runEmployeeSync(rawConfig = {}) {
         message: 'Dry run OK. Tidak ada request yang dikirim ke Fingerspot.',
         count: users.length,
         target_cloud_id: targetCloudId,
+        start_pin: normalizedStartPin,
+        end_pin: normalizedEndPin,
         concurrency,
         request_id: requestId,
         data: users,
@@ -222,14 +416,13 @@ async function runEmployeeSync(rawConfig = {}) {
     }
   }
 
-  for (let i = 0; i < users.length; i += concurrency) {
+  for (let i = 0; i < users.length; i += 1) {
     if (getSession(requestId)?.cancelled) {
       cancelled = true;
       break;
     }
 
-    const batch = users.slice(i, i + concurrency);
-    await Promise.all(batch.map((user, batchIndex) => processUser(user, i + batchIndex)));
+    await processUser(users[i], i);
   }
 
   const successCount = results.filter((item) => item.success).length;
@@ -239,6 +432,7 @@ async function runEmployeeSync(rawConfig = {}) {
     cancelled,
     total: results.length,
     successCount,
+    recheckedPins: recheckedPins.length,
   });
 
   return {
@@ -250,11 +444,14 @@ async function runEmployeeSync(rawConfig = {}) {
         : 'Semua user berhasil dikirim ke mesin tujuan',
       source_cloud_id: sourceCloudId,
       target_cloud_id: targetCloudId,
+      start_pin: normalizedStartPin,
+      end_pin: normalizedEndPin,
       request_id: requestId,
       total: results.length,
       success_count: successCount,
       failed_count: results.length - successCount,
       cancelled,
+      rechecked_pins: recheckedPins,
       results,
     },
   };
