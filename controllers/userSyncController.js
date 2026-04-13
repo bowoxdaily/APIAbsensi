@@ -9,6 +9,17 @@ const FINGERSPOT_API_TOKEN = process.env.FINGERSPOT_API_TOKEN || '';
 const SYNC_RECHECK_TIMEOUT_MS = Math.max(Number(process.env.SYNC_RECHECK_TIMEOUT_MS || 15000), 1000);
 const SYNC_RECHECK_POLL_MS = Math.max(Number(process.env.SYNC_RECHECK_POLL_MS || 1500), 250);
 const SYNC_RECHECK_MAX_GAP = Math.max(Number(process.env.SYNC_RECHECK_MAX_GAP || 100), 1);
+const SYNC_RECHECK_REQUEST_DELAY_MS = Math.max(Number(process.env.SYNC_RECHECK_REQUEST_DELAY_MS || 200), 0);
+const SYNC_SET_USERINFO_DELAY_MS = Math.max(Number(process.env.SYNC_SET_USERINFO_DELAY_MS || 150), 0);
+const SYNC_RECHECK_MAX_REQUESTS = Math.max(Number(process.env.SYNC_RECHECK_MAX_REQUESTS || 300), 1);
+
+function sleep(ms) {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function ensureLogFile() {
   await fs.mkdir(path.dirname(logsFilePath), { recursive: true });
@@ -232,6 +243,8 @@ function buildSyncConfig(input = {}) {
     dryRun: Boolean(input.dry_run ?? input.dryRun),
     limit: Math.max(Number(input.limit || 1000), 1),
     concurrency: Math.min(Math.max(Number(input.concurrency || 3), 1), 10),
+    recheckDelayMs: Math.max(Number(input.recheck_delay_ms ?? input.recheckDelayMs ?? SYNC_RECHECK_REQUEST_DELAY_MS), 0),
+    setDelayMs: Math.max(Number(input.set_delay_ms ?? input.setDelayMs ?? SYNC_SET_USERINFO_DELAY_MS), 0),
   };
 }
 
@@ -272,6 +285,8 @@ async function runEmployeeSync(rawConfig = {}) {
     dryRun,
     limit,
     concurrency,
+    recheckDelayMs,
+    setDelayMs,
   } = buildSyncConfig(rawConfig);
   const requestId = rawConfig.request_id || rawConfig.requestId || createRequestId('sync');
   registerSession(requestId, { prefix: 'sync', type: 'sync-employees' });
@@ -313,13 +328,14 @@ async function runEmployeeSync(rawConfig = {}) {
     .filter((user) => isPinWithinRange(user.pin, normalizedStartPin, normalizedEndPin))
     .slice(0, limit);
   const missingPins = buildMissingNumericPins(initialUsers);
+  const missingPinsLimited = missingPins.slice(0, SYNC_RECHECK_MAX_REQUESTS);
   const recheckedPins = [];
   let users = initialUsers;
 
-  if (missingPins.length) {
+  if (missingPinsLimited.length) {
     const recheckStartedAt = new Date().toISOString();
-    for (let i = 0; i < missingPins.length; i += 1) {
-      const pin = missingPins[i];
+    for (let i = 0; i < missingPinsLimited.length; i += 1) {
+      const pin = missingPinsLimited[i];
       try {
         const upstream = await requestSourceUserInfo(sourceCloudId, pin, transPrefix, i);
         if (upstream.ok) {
@@ -328,9 +344,13 @@ async function runEmployeeSync(rawConfig = {}) {
       } catch (error) {
         console.error(`[sync-userinfo] recheck pin ${pin} gagal: ${error.message}`);
       }
+
+      if (recheckDelayMs > 0 && i + 1 < missingPinsLimited.length) {
+        await sleep(recheckDelayMs);
+      }
     }
 
-    const recheckedUsers = await waitForRecheckedPins(sourceCloudId, missingPins, recheckStartedAt);
+    const recheckedUsers = await waitForRecheckedPins(sourceCloudId, missingPinsLimited, recheckStartedAt);
     if (recheckedUsers.length) {
       const mergedUsers = new Map(users.map((user) => [String(user.pin), user]));
       for (const user of recheckedUsers) {
@@ -366,6 +386,8 @@ async function runEmployeeSync(rawConfig = {}) {
         start_pin: normalizedStartPin,
         end_pin: normalizedEndPin,
         concurrency,
+        recheck_delay_ms: recheckDelayMs,
+        set_delay_ms: setDelayMs,
         request_id: requestId,
         data: users,
       },
@@ -423,6 +445,10 @@ async function runEmployeeSync(rawConfig = {}) {
     }
 
     await processUser(users[i], i);
+
+    if (setDelayMs > 0 && i + 1 < users.length) {
+      await sleep(setDelayMs);
+    }
   }
 
   const successCount = results.filter((item) => item.success).length;
@@ -450,8 +476,13 @@ async function runEmployeeSync(rawConfig = {}) {
       total: results.length,
       success_count: successCount,
       failed_count: results.length - successCount,
+      recheck_delay_ms: recheckDelayMs,
+      set_delay_ms: setDelayMs,
       cancelled,
       rechecked_pins: recheckedPins,
+      recheck_truncated: missingPins.length > missingPinsLimited.length,
+      recheck_total_missing: missingPins.length,
+      recheck_requested: missingPinsLimited.length,
       results,
     },
   };

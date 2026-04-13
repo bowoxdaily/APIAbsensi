@@ -1,6 +1,12 @@
 const API_BASE_URL = process.env.FINGERSPOT_BASE_URL || 'https://developer.fingerspot.io/api';
 const FINGERSPOT_API_TOKEN = process.env.FINGERSPOT_API_TOKEN || '';
 const MAX_BULK_DAYS = 60;
+const USERINFO_BULK_DEFAULT_CONCURRENCY = Math.min(
+  Math.max(Number(process.env.USERINFO_BULK_DEFAULT_CONCURRENCY || 3), 1),
+  10
+);
+const USERINFO_BULK_BATCH_DELAY_MS = Math.max(Number(process.env.USERINFO_BULK_BATCH_DELAY_MS || 250), 0);
+const USERINFO_BULK_MAX_PINS = Math.max(Number(process.env.USERINFO_BULK_MAX_PINS || 1000), 1);
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
 const {
   createRequestId,
@@ -137,6 +143,14 @@ function normalizePinForPayload(pin, padLength) {
   }
 
   return pinString;
+}
+
+function sleep(ms) {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function requestGetUserInfo(payload) {
@@ -361,7 +375,14 @@ async function callGetUserInfoBulk(req, res) {
   const pinWidth = Math.max(Number(req.body?.pin_width || 0), 0);
   const transPrefix = req.body?.trans_prefix || 'userinfo-bulk';
   const dryRun = Boolean(req.body?.dry_run);
-  const concurrency = Math.min(Math.max(Number(req.body?.concurrency || 5), 1), 10);
+  const concurrency = Math.min(
+    Math.max(Number(req.body?.concurrency || USERINFO_BULK_DEFAULT_CONCURRENCY), 1),
+    10
+  );
+  const batchDelayMs = Math.max(
+    Number(req.body?.batch_delay_ms ?? req.body?.delay_ms ?? USERINFO_BULK_BATCH_DELAY_MS),
+    0
+  );
   const requestId = req.body?.request_id || createRequestId('userinfo');
   registerSession(requestId, { prefix: 'userinfo-bulk', type: 'userinfo-bulk' });
 
@@ -393,6 +414,15 @@ async function callGetUserInfoBulk(req, res) {
     pinList.push(normalizePinForPayload(pin, pinWidth));
   }
 
+  if (pinList.length > USERINFO_BULK_MAX_PINS) {
+    return res.status(400).json({
+      success: false,
+      message: `Jumlah PIN melebihi batas ${USERINFO_BULK_MAX_PINS}. Kecilkan range atau naikkan USERINFO_BULK_MAX_PINS.`,
+      total_pins: pinList.length,
+      max_allowed: USERINFO_BULK_MAX_PINS,
+    });
+  }
+
   if (dryRun) {
     finishSession(requestId, { status: 'completed', cancelled: false, total: pinList.length });
     return res.json({
@@ -401,6 +431,8 @@ async function callGetUserInfoBulk(req, res) {
       count: pinList.length,
       cloud_id: sourceCloudId,
       pins: pinList,
+      concurrency,
+      batch_delay_ms: batchDelayMs,
       request_id: requestId,
     });
   }
@@ -452,6 +484,10 @@ async function callGetUserInfoBulk(req, res) {
 
     const batch = pinList.slice(i, i + concurrency);
     await Promise.all(batch.map((pin, batchIndex) => processPin(pin, i + batchIndex)));
+
+    if (batchDelayMs > 0 && i + concurrency < pinList.length) {
+      await sleep(batchDelayMs);
+    }
   }
 
   const hasFailure = successCount !== results.length;
@@ -471,6 +507,8 @@ async function callGetUserInfoBulk(req, res) {
     total: results.length,
     success_count: successCount,
     failed_count: results.length - successCount,
+    concurrency,
+    batch_delay_ms: batchDelayMs,
     cancelled,
     request_id: requestId,
     results,

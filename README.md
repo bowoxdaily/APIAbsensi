@@ -38,6 +38,48 @@ Khusus endpoint callback webhook (`/api/webhook` dan `/api/webhook/userinfo`) ti
 
 Kalau Fingerspot mengirim field identitas mesin, gunakan salah satu: `machine_id`, `machineId`, `device_id`, `deviceId`, atau header `x-machine-id`.
 
+Untuk mengendalikan beban API Fingerspot (khusus get/set userinfo), Anda bisa atur throttle ini di `.env`:
+
+```env
+USERINFO_BULK_DEFAULT_CONCURRENCY=3
+USERINFO_BULK_BATCH_DELAY_MS=250
+USERINFO_BULK_MAX_PINS=1000
+SYNC_RECHECK_REQUEST_DELAY_MS=200
+SYNC_SET_USERINFO_DELAY_MS=150
+SYNC_RECHECK_MAX_REQUESTS=300
+```
+
+### Profil Siap Pakai (Aman/Normal/Cepat)
+
+Gunakan salah satu profil berikut di `.env`:
+
+- Aman (stabil, minim beban)
+  - `USERINFO_BULK_DEFAULT_CONCURRENCY=2`
+  - `USERINFO_BULK_BATCH_DELAY_MS=500`
+  - `USERINFO_BULK_MAX_PINS=200`
+  - `SYNC_RECHECK_REQUEST_DELAY_MS=400`
+  - `SYNC_SET_USERINFO_DELAY_MS=300`
+  - `SYNC_RECHECK_MAX_REQUESTS=100`
+- Normal (seimbang)
+  - `USERINFO_BULK_DEFAULT_CONCURRENCY=3`
+  - `USERINFO_BULK_BATCH_DELAY_MS=300`
+  - `USERINFO_BULK_MAX_PINS=500`
+  - `SYNC_RECHECK_REQUEST_DELAY_MS=250`
+  - `SYNC_SET_USERINFO_DELAY_MS=200`
+  - `SYNC_RECHECK_MAX_REQUESTS=200`
+- Cepat (agresif, wajib monitoring)
+  - `USERINFO_BULK_DEFAULT_CONCURRENCY=5`
+  - `USERINFO_BULK_BATCH_DELAY_MS=150`
+  - `USERINFO_BULK_MAX_PINS=1000`
+  - `SYNC_RECHECK_REQUEST_DELAY_MS=150`
+  - `SYNC_SET_USERINFO_DELAY_MS=100`
+  - `SYNC_RECHECK_MAX_REQUESTS=300`
+
+Tips pindah profil:
+
+- Ubah satu profil dulu, restart server, lalu uji 2-3 kali run.
+- Jika muncul `failed_count` atau status `207`, turunkan profil (atau naikkan delay).
+
 Default mapping awal yang dipakai adalah:
 
 - `GQ5179635` -> `VIVO ASSEMBLING 1`
@@ -119,6 +161,7 @@ Karena `get_userinfo` harus dipanggil per PIN, gunakan endpoint bulk ini untuk m
   "pin_width": 4,
   "trans_prefix": "userinfo-bulk",
   "concurrency": 5,
+  "batch_delay_ms": 250,
   "dry_run": true
 }
 ```
@@ -128,6 +171,8 @@ Catatan:
 - `start_pin` dan `end_pin` adalah range PIN yang mau dicoba.
 - `pin_width` dipakai supaya PIN jadi `0001`, `0013`, dst.
 - `concurrency` lebih tinggi akan lebih cepat, tapi jangan terlalu tinggi kalau mesin mulai lambat atau sering balas `ERROR_NO_ID`.
+- `batch_delay_ms` menambah jeda antar batch request agar tidak membanjiri API Fingerspot.
+- Jika range PIN terlalu besar, request akan ditolak sesuai batas `USERINFO_BULK_MAX_PINS`.
 - Mulai dari `dry_run: true` dulu untuk cek daftar PIN yang akan dikirim.
 - Setelah itu ubah ke `dry_run: false` agar permintaan benar-benar dikirim ke Fingerspot.
 - Semua data yang kembali dari webhook akan tetap tersimpan di [logs/data.txt](logs/data.txt).
@@ -155,6 +200,8 @@ Contoh copy semua user dari mesin A (`GQ5179635`) ke mesin B (`GQ5778665`):
   "source_cloud_id": "GQ5179635",
   "target_cloud_id": "GQ5778665",
   "trans_prefix": "copy-user",
+  "recheck_delay_ms": 200,
+  "set_delay_ms": 150,
   "dry_run": false
 }
 ```
@@ -162,6 +209,8 @@ Contoh copy semua user dari mesin A (`GQ5179635`) ke mesin B (`GQ5778665`):
 Catatan:
 
 - `dry_run: true` untuk cek data user tanpa mengirim ke mesin tujuan.
+- `recheck_delay_ms` mengatur jeda saat backend meminta `get_userinfo` tambahan untuk PIN yang hilang.
+- `set_delay_ms` mengatur jeda tiap kirim `set_userinfo` ke mesin tujuan.
 - Jika hasil `count` 0, berarti data userinfo dari mesin sumber belum ada di webhook log. Jalankan `get_userinfo` per PIN dulu agar masuk ke log.
 
 ## Test Get Userinfo Via Postman
