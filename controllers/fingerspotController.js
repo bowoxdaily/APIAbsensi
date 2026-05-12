@@ -1,12 +1,40 @@
+const http = require('http');
+const https = require('https');
 const API_BASE_URL = process.env.FINGERSPOT_BASE_URL || 'https://developer.fingerspot.io/api';
 const FINGERSPOT_API_TOKEN = process.env.FINGERSPOT_API_TOKEN || '';
+
+function getFingerspotToken(cloudId, customToken) {
+  if (customToken) return customToken;
+  
+  if (process.env.FINGERSPOT_API_TOKENS_JSON) {
+    try {
+      const tokensMap = JSON.parse(process.env.FINGERSPOT_API_TOKENS_JSON);
+      if (cloudId && tokensMap[cloudId]) {
+        return tokensMap[cloudId];
+      }
+    } catch (e) {
+      console.error('Gagal parsing FINGERSPOT_API_TOKENS_JSON:', e.message);
+    }
+  }
+  
+  return FINGERSPOT_API_TOKEN;
+}
 const MAX_BULK_DAYS = 60;
 const USERINFO_BULK_DEFAULT_CONCURRENCY = Math.min(
-  Math.max(Number(process.env.USERINFO_BULK_DEFAULT_CONCURRENCY || 3), 1),
-  10
+  Math.max(Number(process.env.USERINFO_BULK_DEFAULT_CONCURRENCY || 5), 1),
+  20
 );
-const USERINFO_BULK_BATCH_DELAY_MS = Math.max(Number(process.env.USERINFO_BULK_BATCH_DELAY_MS || 250), 0);
+const USERINFO_BULK_BATCH_DELAY_MS = Math.max(Number(process.env.USERINFO_BULK_BATCH_DELAY_MS || 100), 0);
 const USERINFO_BULK_MAX_PINS = Math.max(Number(process.env.USERINFO_BULK_MAX_PINS || 1000), 1);
+const USERINFO_REQUEST_TIMEOUT_MS = Math.max(Number(process.env.USERINFO_REQUEST_TIMEOUT_MS || 10000), 1000);
+
+// Keep-alive agents for connection reuse (avoids TCP/TLS handshake per request)
+const keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 25, keepAliveMsecs: 30000 });
+const keepAliveHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 25, keepAliveMsecs: 30000 });
+
+function getKeepAliveAgent(url) {
+  return url.startsWith('https') ? keepAliveHttpsAgent : keepAliveHttpAgent;
+}
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
 const {
   createRequestId,
@@ -84,11 +112,12 @@ function splitDateRangesByTwoDays(startDate, endDate) {
   return ranges;
 }
 
-async function requestGetAttlog(payload) {
+async function requestGetAttlog(payload, apiToken) {
+  const token = apiToken || FINGERSPOT_API_TOKEN;
   const response = await fetch(`${API_BASE_URL}/get_attlog`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${FINGERSPOT_API_TOKEN}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
@@ -153,15 +182,25 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function requestGetUserInfo(payload) {
-  const response = await fetch(`${API_BASE_URL}/get_userinfo`, {
+async function requestGetUserInfo(payload, { signal, apiToken } = {}) {
+  const url = `${API_BASE_URL}/get_userinfo`;
+  const token = apiToken || FINGERSPOT_API_TOKEN;
+  const fetchOptions = {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${FINGERSPOT_API_TOKEN}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
+      Connection: 'keep-alive',
     },
     body: JSON.stringify(payload),
-  });
+    dispatcher: getKeepAliveAgent(url),
+  };
+
+  if (signal) {
+    fetchOptions.signal = signal;
+  }
+
+  const response = await fetch(url, fetchOptions);
 
   const text = await response.text();
   let data;
@@ -321,18 +360,19 @@ function validateGetUserInfoPayload(body) {
 }
 
 async function callGetUserInfo(req, res) {
-  if (!FINGERSPOT_API_TOKEN) {
-    return res.status(500).json({
-      success: false,
-      message: 'FINGERSPOT_API_TOKEN belum diisi di .env',
-    });
-  }
-
   const payload = {
     trans_id: req.body?.trans_id,
     cloud_id: req.body?.cloud_id,
     pin: req.body?.pin,
   };
+
+  const apiToken = getFingerspotToken(payload.cloud_id, req.body?.api_token);
+  if (!apiToken) {
+    return res.status(500).json({
+      success: false,
+      message: 'API Token belum dikonfigurasi untuk mesin ini',
+    });
+  }
 
   const errors = validateGetUserInfoPayload(payload);
   if (errors.length) {
@@ -344,7 +384,7 @@ async function callGetUserInfo(req, res) {
   }
 
   try {
-    const upstream = await requestGetUserInfo(payload);
+    const upstream = await requestGetUserInfo(payload, { apiToken });
 
     return res.status(upstream.status).json({
       success: upstream.ok,
@@ -362,14 +402,15 @@ async function callGetUserInfo(req, res) {
 }
 
 async function callGetUserInfoBulk(req, res) {
-  if (!FINGERSPOT_API_TOKEN) {
+  const sourceCloudId = req.body?.cloud_id;
+  const apiToken = getFingerspotToken(sourceCloudId, req.body?.api_token);
+  
+  if (!apiToken) {
     return res.status(500).json({
       success: false,
-      message: 'FINGERSPOT_API_TOKEN belum diisi di .env',
+      message: 'API Token belum dikonfigurasi untuk mesin ini',
     });
   }
-
-  const sourceCloudId = req.body?.cloud_id;
   const startPinRaw = parsePinValue(req.body?.start_pin ?? req.body?.from_pin ?? 1);
   const endPinRaw = parsePinValue(req.body?.end_pin ?? req.body?.to_pin ?? 1000);
   const pinWidth = Math.max(Number(req.body?.pin_width || 0), 0);
@@ -377,7 +418,7 @@ async function callGetUserInfoBulk(req, res) {
   const dryRun = Boolean(req.body?.dry_run);
   const concurrency = Math.min(
     Math.max(Number(req.body?.concurrency || USERINFO_BULK_DEFAULT_CONCURRENCY), 1),
-    10
+    20
   );
   const batchDelayMs = Math.max(
     Number(req.body?.batch_delay_ms ?? req.body?.delay_ms ?? USERINFO_BULK_BATCH_DELAY_MS),
@@ -437,9 +478,11 @@ async function callGetUserInfoBulk(req, res) {
     });
   }
 
+  const startTime = Date.now();
   const results = [];
   let successCount = 0;
   let cancelled = false;
+  let timedOutCount = 0;
 
   async function processPin(pin, index) {
     if (getSession(requestId)?.cancelled) {
@@ -454,48 +497,92 @@ async function callGetUserInfoBulk(req, res) {
     };
 
     try {
-      const upstream = await requestGetUserInfo(payload);
-      const rowSuccess = upstream.ok && upstream.data?.success !== false;
-      if (rowSuccess) {
-        successCount += 1;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), USERINFO_REQUEST_TIMEOUT_MS);
+
+      try {
+        const upstream = await requestGetUserInfo(payload, { signal: controller.signal, apiToken });
+        clearTimeout(timeoutId);
+        const rowSuccess = upstream.ok && upstream.data?.success !== false;
+        if (rowSuccess) {
+          successCount += 1;
+        }
+
+        results.push({
+          pin,
+          success: rowSuccess,
+          upstreamStatus: upstream.status,
+          upstream: upstream.data,
+        });
+      } catch (fetchError) {
+        clearTimeout(timeoutId);
+        throw fetchError;
+      }
+    } catch (error) {
+      const isTimeout = error.name === 'AbortError';
+      if (isTimeout) {
+        timedOutCount += 1;
       }
 
       results.push({
         pin,
-        success: rowSuccess,
-        upstreamStatus: upstream.status,
-        upstream: upstream.data,
-      });
-    } catch (error) {
-      results.push({
-        pin,
         success: false,
         upstreamStatus: 0,
-        upstream: { message: error.message },
+        upstream: { message: isTimeout ? `Timeout setelah ${USERINFO_REQUEST_TIMEOUT_MS}ms` : error.message },
       });
     }
   }
 
-  for (let i = 0; i < pinList.length; i += concurrency) {
-    if (getSession(requestId)?.cancelled) {
-      cancelled = true;
-      break;
+  // Pipeline-style processing: use a semaphore pattern for true concurrent throughput
+  // instead of waiting for each batch to fully complete before starting the next
+  const activeTasks = new Set();
+  let pinIndex = 0;
+
+  async function runPipeline() {
+    while (pinIndex < pinList.length && !cancelled) {
+      if (getSession(requestId)?.cancelled) {
+        cancelled = true;
+        break;
+      }
+
+      // Wait if we've reached max concurrent tasks
+      while (activeTasks.size >= concurrency) {
+        await Promise.race(activeTasks);
+      }
+
+      if (cancelled) break;
+
+      const currentIndex = pinIndex;
+      pinIndex += 1;
+      const pin = pinList[currentIndex];
+
+      const task = processPin(pin, currentIndex).then(() => {
+        activeTasks.delete(task);
+      });
+      activeTasks.add(task);
+
+      // Small stagger between launching requests to avoid thundering herd
+      if (batchDelayMs > 0 && pinIndex < pinList.length) {
+        await sleep(Math.ceil(batchDelayMs / concurrency));
+      }
     }
 
-    const batch = pinList.slice(i, i + concurrency);
-    await Promise.all(batch.map((pin, batchIndex) => processPin(pin, i + batchIndex)));
-
-    if (batchDelayMs > 0 && i + concurrency < pinList.length) {
-      await sleep(batchDelayMs);
+    // Wait for remaining in-flight tasks
+    if (activeTasks.size > 0) {
+      await Promise.all(activeTasks);
     }
   }
 
+  await runPipeline();
+
+  const elapsedMs = Date.now() - startTime;
   const hasFailure = successCount !== results.length;
   finishSession(requestId, {
     status: cancelled ? 'cancelled' : 'completed',
     cancelled,
     total: results.length,
     successCount,
+    elapsedMs,
   });
 
   return res.status(hasFailure ? 207 : 200).json({
@@ -507,8 +594,10 @@ async function callGetUserInfoBulk(req, res) {
     total: results.length,
     success_count: successCount,
     failed_count: results.length - successCount,
+    timed_out_count: timedOutCount,
     concurrency,
     batch_delay_ms: batchDelayMs,
+    elapsed_ms: elapsedMs,
     cancelled,
     request_id: requestId,
     results,
@@ -516,19 +605,20 @@ async function callGetUserInfoBulk(req, res) {
 }
 
 async function callGetAttlog(req, res) {
-  if (!FINGERSPOT_API_TOKEN) {
-    return res.status(500).json({
-      success: false,
-      message: 'FINGERSPOT_API_TOKEN belum diisi di .env',
-    });
-  }
-
   const payload = {
     trans_id: req.body?.trans_id,
     cloud_id: req.body?.cloud_id,
   };
 
   Object.assign(payload, resolveAttlogDateRange(req.body));
+
+  const apiToken = getFingerspotToken(payload.cloud_id, req.body?.api_token);
+  if (!apiToken) {
+    return res.status(500).json({
+      success: false,
+      message: 'API Token belum dikonfigurasi untuk mesin ini',
+    });
+  }
 
   const errors = validateGetAttlogPayload(payload);
   if (errors.length) {
@@ -540,7 +630,7 @@ async function callGetAttlog(req, res) {
   }
 
   try {
-    const upstream = await requestGetAttlog(payload);
+    const upstream = await requestGetAttlog(payload, apiToken);
     const upstreamRows = Array.isArray(upstream.data?.data) ? upstream.data.data : [];
     const db = await saveAttlogsToSupabase(upstreamRows, payload);
 
@@ -560,13 +650,6 @@ async function callGetAttlog(req, res) {
 }
 
 async function callGetAttlogBulk(req, res) {
-  if (!FINGERSPOT_API_TOKEN) {
-    return res.status(500).json({
-      success: false,
-      message: 'FINGERSPOT_API_TOKEN belum diisi di .env',
-    });
-  }
-
   const payload = {
     trans_id: req.body?.trans_id,
     cloud_id: req.body?.cloud_id,
@@ -603,6 +686,14 @@ async function callGetAttlogBulk(req, res) {
     }
   }
 
+  const apiToken = getFingerspotToken(payload.cloud_id, req.body?.api_token);
+  if (!apiToken) {
+    return res.status(500).json({
+      success: false,
+      message: 'API Token belum dikonfigurasi untuk mesin ini',
+    });
+  }
+
   if (errors.length) {
     return res.status(400).json({
       success: false,
@@ -626,7 +717,7 @@ async function callGetAttlogBulk(req, res) {
         end_date: range.end_date,
       };
 
-      const upstream = await requestGetAttlog(chunkPayload);
+      const upstream = await requestGetAttlog(chunkPayload, apiToken);
       const chunkData = Array.isArray(upstream.data?.data) ? upstream.data.data : [];
 
       if (!upstream.ok || upstream.data?.success === false) {

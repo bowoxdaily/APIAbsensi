@@ -1,17 +1,45 @@
 const fs = require('fs/promises');
 const path = require('path');
+const http = require('http');
+const https = require('https');
 const { createRequestId, registerSession, getSession, finishSession } = require('../config/requestRegistry');
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
 
 const logsFilePath = path.join(process.cwd(), 'logs', 'data.txt');
 const API_BASE_URL = process.env.FINGERSPOT_BASE_URL || 'https://developer.fingerspot.io/api';
 const FINGERSPOT_API_TOKEN = process.env.FINGERSPOT_API_TOKEN || '';
+
+function getFingerspotToken(cloudId, customToken) {
+  if (customToken) return customToken;
+  
+  if (process.env.FINGERSPOT_API_TOKENS_JSON) {
+    try {
+      const tokensMap = JSON.parse(process.env.FINGERSPOT_API_TOKENS_JSON);
+      if (cloudId && tokensMap[cloudId]) {
+        return tokensMap[cloudId];
+      }
+    } catch (e) {
+      console.error('Gagal parsing FINGERSPOT_API_TOKENS_JSON:', e.message);
+    }
+  }
+  
+  return FINGERSPOT_API_TOKEN;
+}
 const SYNC_RECHECK_TIMEOUT_MS = Math.max(Number(process.env.SYNC_RECHECK_TIMEOUT_MS || 15000), 1000);
 const SYNC_RECHECK_POLL_MS = Math.max(Number(process.env.SYNC_RECHECK_POLL_MS || 1500), 250);
 const SYNC_RECHECK_MAX_GAP = Math.max(Number(process.env.SYNC_RECHECK_MAX_GAP || 100), 1);
-const SYNC_RECHECK_REQUEST_DELAY_MS = Math.max(Number(process.env.SYNC_RECHECK_REQUEST_DELAY_MS || 200), 0);
-const SYNC_SET_USERINFO_DELAY_MS = Math.max(Number(process.env.SYNC_SET_USERINFO_DELAY_MS || 150), 0);
+const SYNC_RECHECK_REQUEST_DELAY_MS = Math.max(Number(process.env.SYNC_RECHECK_REQUEST_DELAY_MS || 100), 0);
+const SYNC_SET_USERINFO_DELAY_MS = Math.max(Number(process.env.SYNC_SET_USERINFO_DELAY_MS || 80), 0);
 const SYNC_RECHECK_MAX_REQUESTS = Math.max(Number(process.env.SYNC_RECHECK_MAX_REQUESTS || 300), 1);
+const SYNC_REQUEST_TIMEOUT_MS = Math.max(Number(process.env.SYNC_REQUEST_TIMEOUT_MS || 10000), 1000);
+
+// Keep-alive agents for connection reuse
+const keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 25, keepAliveMsecs: 30000 });
+const keepAliveHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 25, keepAliveMsecs: 30000 });
+
+function getKeepAliveAgent(url) {
+  return url.startsWith('https') ? keepAliveHttpsAgent : keepAliveHttpAgent;
+}
 
 function sleep(ms) {
   if (ms <= 0) {
@@ -141,33 +169,47 @@ function buildUserFromRecord(record) {
   };
 }
 
-async function requestSourceUserInfo(sourceCloudId, pin, transPrefix, index) {
-  const response = await fetch(`${API_BASE_URL}/get_userinfo`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${FINGERSPOT_API_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      trans_id: `${transPrefix}-recheck-${Date.now()}-${index + 1}`,
-      cloud_id: sourceCloudId,
-      pin,
-    }),
-  });
+async function requestSourceUserInfo(sourceCloudId, pin, transPrefix, index, apiToken) {
+  const url = `${API_BASE_URL}/get_userinfo`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS);
+  const token = apiToken || FINGERSPOT_API_TOKEN;
 
-  const text = await response.text();
-  let data;
   try {
-    data = text ? JSON.parse(text) : null;
-  } catch (error) {
-    data = { raw: text };
-  }
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Connection: 'keep-alive',
+      },
+      body: JSON.stringify({
+        trans_id: `${transPrefix}-recheck-${Date.now()}-${index + 1}`,
+        cloud_id: sourceCloudId,
+        pin,
+      }),
+      signal: controller.signal,
+      dispatcher: getKeepAliveAgent(url),
+    });
 
-  return {
-    status: response.status,
-    ok: response.ok,
-    data,
-  };
+    clearTimeout(timeoutId);
+    const text = await response.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (error) {
+      data = { raw: text };
+    }
+
+    return {
+      status: response.status,
+      ok: response.ok,
+      data,
+    };
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
 }
 
 async function waitForRecheckedPins(sourceCloudId, expectedPins, startedAtIso) {
@@ -208,29 +250,43 @@ async function waitForRecheckedPins(sourceCloudId, expectedPins, startedAtIso) {
   return Array.from(foundPins.values());
 }
 
-async function callSetUserInfo(payload) {
-  const response = await fetch(`${API_BASE_URL}/set_userinfo`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${FINGERSPOT_API_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
+async function callSetUserInfo(payload, apiToken) {
+  const url = `${API_BASE_URL}/set_userinfo`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS);
+  const token = apiToken || FINGERSPOT_API_TOKEN;
 
-  const text = await response.text();
-  let data;
   try {
-    data = text ? JSON.parse(text) : null;
-  } catch (error) {
-    data = { raw: text };
-  }
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Connection: 'keep-alive',
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+      dispatcher: getKeepAliveAgent(url),
+    });
 
-  return {
-    status: response.status,
-    ok: response.ok,
-    data,
-  };
+    clearTimeout(timeoutId);
+    const text = await response.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (error) {
+      data = { raw: text };
+    }
+
+    return {
+      status: response.status,
+      ok: response.ok,
+      data,
+    };
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
 }
 
 function buildSyncConfig(input = {}) {
@@ -291,12 +347,15 @@ async function runEmployeeSync(rawConfig = {}) {
   const requestId = rawConfig.request_id || rawConfig.requestId || createRequestId('sync');
   registerSession(requestId, { prefix: 'sync', type: 'sync-employees' });
 
-  if (!FINGERSPOT_API_TOKEN) {
+  const sourceToken = getFingerspotToken(sourceCloudId, rawConfig.source_api_token || rawConfig.api_token);
+  const targetToken = getFingerspotToken(targetCloudId, rawConfig.target_api_token || rawConfig.api_token);
+
+  if (!sourceToken || !targetToken) {
     return {
       statusCode: 500,
       payload: {
         success: false,
-        message: 'FINGERSPOT_API_TOKEN belum diisi di .env',
+        message: 'API Token belum dikonfigurasi untuk mesin sumber atau tujuan',
       },
     };
   }
@@ -334,29 +393,48 @@ async function runEmployeeSync(rawConfig = {}) {
 
   if (missingPinsLimited.length) {
     const recheckStartedAt = new Date().toISOString();
-    for (let i = 0; i < missingPinsLimited.length; i += 1) {
-      const pin = missingPinsLimited[i];
-      try {
-        const upstream = await requestSourceUserInfo(sourceCloudId, pin, transPrefix, i);
-        if (upstream.ok) {
-          recheckedPins.push(pin);
-        }
-      } catch (error) {
-        console.error(`[sync-userinfo] recheck pin ${pin} gagal: ${error.message}`);
+
+    for (let i = 0; i < missingPinsLimited.length; i += concurrency) {
+      if (getSession(requestId)?.cancelled) {
+        cancelled = true;
+        break;
       }
 
-      if (recheckDelayMs > 0 && i + 1 < missingPinsLimited.length) {
+      const batch = missingPinsLimited.slice(i, i + concurrency);
+      const batchResults = await Promise.all(
+        batch.map(async (pin, batchIndex) => {
+          try {
+            const upstream = await requestSourceUserInfo(sourceCloudId, pin, transPrefix, i + batchIndex, sourceToken);
+            if (upstream.ok) {
+              return pin;
+            }
+          } catch (error) {
+            console.error(`[sync-userinfo] recheck pin ${pin} gagal: ${error.message}`);
+          }
+          return null;
+        })
+      );
+
+      for (const pin of batchResults) {
+        if (pin !== null) {
+          recheckedPins.push(pin);
+        }
+      }
+
+      if (recheckDelayMs > 0 && i + concurrency < missingPinsLimited.length) {
         await sleep(recheckDelayMs);
       }
     }
 
-    const recheckedUsers = await waitForRecheckedPins(sourceCloudId, missingPinsLimited, recheckStartedAt);
-    if (recheckedUsers.length) {
-      const mergedUsers = new Map(users.map((user) => [String(user.pin), user]));
-      for (const user of recheckedUsers) {
-        mergedUsers.set(String(user.pin), user);
+    if (!cancelled) {
+      const recheckedUsers = await waitForRecheckedPins(sourceCloudId, missingPinsLimited, recheckStartedAt);
+      if (recheckedUsers.length) {
+        const mergedUsers = new Map(users.map((user) => [String(user.pin), user]));
+        for (const user of recheckedUsers) {
+          mergedUsers.set(String(user.pin), user);
+        }
+        users = Array.from(mergedUsers.values()).sort((a, b) => comparePins(a.pin, b.pin)).slice(0, limit);
       }
-      users = Array.from(mergedUsers.values()).sort((a, b) => comparePins(a.pin, b.pin)).slice(0, limit);
     }
   }
 
@@ -394,6 +472,7 @@ async function runEmployeeSync(rawConfig = {}) {
     };
   }
 
+  const startTime = Date.now();
   const results = [];
   let cancelled = false;
   async function processUser(user, index) {
@@ -420,7 +499,7 @@ async function runEmployeeSync(rawConfig = {}) {
     };
 
     try {
-      const upstream = await callSetUserInfo(payload);
+      const upstream = await callSetUserInfo(payload, targetToken);
       const rowSuccess = upstream.ok && upstream.data?.success !== false;
       results.push({
         pin: user.pin,
@@ -438,19 +517,44 @@ async function runEmployeeSync(rawConfig = {}) {
     }
   }
 
-  for (let i = 0; i < users.length; i += 1) {
+  // Pipeline-style processing: start next request as soon as one slot frees up
+  const activeTasks = new Set();
+  let userIndex = 0;
+
+  while (userIndex < users.length && !cancelled) {
     if (getSession(requestId)?.cancelled) {
       cancelled = true;
       break;
     }
 
-    await processUser(users[i], i);
+    // Wait if at max concurrency
+    while (activeTasks.size >= concurrency) {
+      await Promise.race(activeTasks);
+    }
 
-    if (setDelayMs > 0 && i + 1 < users.length) {
-      await sleep(setDelayMs);
+    if (cancelled) break;
+
+    const currentIndex = userIndex;
+    userIndex += 1;
+    const user = users[currentIndex];
+
+    const task = processUser(user, currentIndex).then(() => {
+      activeTasks.delete(task);
+    });
+    activeTasks.add(task);
+
+    // Small stagger to avoid thundering herd
+    if (setDelayMs > 0 && userIndex < users.length) {
+      await sleep(Math.ceil(setDelayMs / concurrency));
     }
   }
 
+  // Wait for remaining in-flight tasks
+  if (activeTasks.size > 0) {
+    await Promise.all(activeTasks);
+  }
+
+  const elapsedMs = Date.now() - startTime;
   const successCount = results.filter((item) => item.success).length;
   const hasFailure = successCount !== results.length;
   finishSession(requestId, {
@@ -459,6 +563,7 @@ async function runEmployeeSync(rawConfig = {}) {
     total: results.length,
     successCount,
     recheckedPins: recheckedPins.length,
+    elapsedMs,
   });
 
   return {
@@ -476,6 +581,7 @@ async function runEmployeeSync(rawConfig = {}) {
       total: results.length,
       success_count: successCount,
       failed_count: results.length - successCount,
+      elapsed_ms: elapsedMs,
       recheck_delay_ms: recheckDelayMs,
       set_delay_ms: setDelayMs,
       cancelled,
