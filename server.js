@@ -10,6 +10,7 @@ const path = require('path');
 const apiRoutes = require('./routes/api');
 const { runEmployeeSync } = require('./controllers/userSyncController');
 const { getActiveSyncJobs } = require('./config/runtimeStore');
+const { initAttlogCron } = require('./config/attlogCron');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -79,6 +80,9 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server berjalan di port ${port}`);
+
+  // Attlog pull cron: ambil data langsung dari API Fingerspot secara berkala
+  initAttlogCron(true);
 
   const enableSyncCron = String(process.env.ENABLE_SYNC_CRON || 'false').toLowerCase() === 'true';
   if (!enableSyncCron) {
