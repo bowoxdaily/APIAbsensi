@@ -176,7 +176,7 @@ async function getAttlog(req, res) {
   const includeMeta = toBoolean(req.query.include_meta || 'false');
 
   const raw = await fs.readFile(logsFilePath, 'utf8');
-  const data = raw
+  const webhookData = raw
     .split('\n')
     .filter(Boolean)
     .map((line) => {
@@ -188,15 +188,77 @@ async function getAttlog(req, res) {
     })
     .filter(Boolean)
     .filter((record) => matchesDateRange(record, dateRange))
-    .sort(sortNewestFirst)
     .map((record) => mapAttlogRecord(record, includeMeta));
+
+  let supabaseData = [];
+  if (hasSupabaseConfig()) {
+    const supabase = getSupabaseClient();
+    const tableName = getSupabaseConfig().table;
+    let query = supabase.from(tableName).select('*').order('fetched_at', { ascending: false });
+
+    if (dateRange.start_date) {
+      query = query.gte('scan_date', dateRange.start_date);
+    }
+    if (dateRange.end_date) {
+      query = query.lte('scan_date', `${dateRange.end_date} 23:59:59`);
+    }
+
+    const { data, error } = await query;
+    if (!error && data) {
+      supabaseData = data.map((record) => {
+        const mapped = {
+          machineName: null, // Supabase doesn't store machineName directly by default
+          machineId: record.cloud_id || null,
+          pin: record.pin || null,
+          scan: record.scan_date || null,
+          verify: record.verify ?? null,
+          status_scan: record.status_scan ?? null,
+          photo_url: record.photo_url || null,
+          work_code: null,
+          receivedAt: record.fetched_at || null,
+        };
+
+        if (includeMeta) {
+          return {
+            ...mapped,
+            meta: {
+              id: record.id || null,
+              eventId: null,
+              ip: null,
+              method: null,
+              path: null,
+              headers: null,
+            },
+            raw_body: record.raw_payload || null,
+          };
+        }
+        return mapped;
+      });
+    }
+  }
+
+  const mergedRows = [...webhookData, ...supabaseData].sort((left, right) => {
+    const timeLeft = new Date(left.scan || left.receivedAt || 0).getTime();
+    const timeRight = new Date(right.scan || right.receivedAt || 0).getTime();
+    return timeRight - timeLeft;
+  });
+
+  const uniqueByKey = new Map();
+  for (const row of mergedRows) {
+    const key = `${row.machineId}|${row.pin}|${row.scan}`;
+    if (!uniqueByKey.has(key)) {
+      uniqueByKey.set(key, row);
+    }
+  }
+
+  const result = Array.from(uniqueByKey.values());
 
   return res.json({
     success: true,
     date_range: dateRange,
     include_meta: includeMeta,
-    count: data.length,
-    data,
+    count: result.length,
+    data: result,
   });
 }
 
