@@ -46,6 +46,18 @@ function getDefaultDateRange() {
 }
 
 function resolveDateRange(query = {}) {
+  // Tambahan fitur untuk filter 1 tanggal spesifik secara langsung
+  if (query.date) {
+    const singleDate = toDateKey(query.date);
+    if (singleDate) {
+      return {
+        start_date: singleDate,
+        end_date: singleDate,
+        defaulted: false,
+      };
+    }
+  }
+
   const startInput = query.start_date || query.startDate || query.from || query.date_from || null;
   const endInput = query.end_date || query.endDate || query.to || query.date_to || null;
 
