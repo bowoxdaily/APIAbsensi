@@ -6,6 +6,8 @@
 
 const { getMachineMap } = require('./runtimeConfig');
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('./supabase');
+const { pushAttlogsToHris } = require('../services/hrisPush');
+const { buildSourceKey } = require('../utils/sourceKey');
 
 const API_BASE_URL = process.env.FINGERSPOT_BASE_URL || 'https://developer.fingerspot.io/api';
 const FINGERSPOT_API_TOKEN = process.env.FINGERSPOT_API_TOKEN || '';
@@ -45,14 +47,6 @@ function buildDateRange() {
     start_date: formatLocalDate(from),
     end_date: formatLocalDate(now),
   };
-}
-
-function buildSourceKey(cloudId, row) {
-  const pin = row?.pin ?? '';
-  const scanDate = row?.scan_date ?? '';
-  const verify = row?.verify ?? '';
-  const statusScan = row?.status_scan ?? '';
-  return `${cloudId}|${pin}|${scanDate}|${verify}|${statusScan}`;
 }
 
 function sleep(ms) {
@@ -150,6 +144,14 @@ async function pullAttlogForMachine(cloudId, machineName) {
     console.log(
       `[attlog-cron] Mesin ${machineName} (${cloudId}): berhasil upsert ${payload_rows.length} record (${dateRange.start_date} s/d ${dateRange.end_date})`
     );
+
+    const rowsForHris = payload_rows.map((row) => ({
+      ...row,
+      machine_name: machineName,
+    }));
+    pushAttlogsToHris(rowsForHris, { fromCron: true }).catch((error) => {
+      console.error(`[hris-push] cron background error: ${error.message}`);
+    });
   } else {
     console.log(
       `[attlog-cron] Mesin ${machineName} (${cloudId}): ${rows.length} record diterima tapi Supabase belum dikonfigurasi`

@@ -364,7 +364,85 @@ Catatan:
 }
 ```
 
-## Contoh Laravel
+## Push Realtime ke HRIS (Outbound Webhook)
+
+Setelah scan absensi masuk (webhook Fingerspot atau pull cron), server ini bisa **langsung POST** ke webhook HRIS/Laravel tanpa polling.
+
+Isi di `.env`:
+
+```env
+ENABLE_HRIS_PUSH=true
+HRIS_WEBHOOK_URL=https://hris-anda.com/api/attendance/webhook
+HRIS_WEBHOOK_TOKEN=secret-token-hris
+```
+
+Payload yang dikirim ke HRIS:
+
+```json
+{
+  "event": "attlog",
+  "source_key": "webhook|wh_1712345678_abc123",
+  "cloud_id": "GQ5179635",
+  "machine_name": "VIVO ASSEMBLING 1",
+  "pin": "1001",
+  "scan": "2026-06-04 08:15:30",
+  "datetime": "2026-06-04 08:15:30",
+  "scan_date": "2026-06-04 08:15:30",
+  "verify": 1,
+  "status_scan": 0,
+  "photo_url": null,
+  "received_at": "2026-06-04T01:15:31.000Z"
+}
+```
+
+Header auth (jika `HRIS_WEBHOOK_TOKEN` diisi):
+
+- `X-Fingerspot-Token: <webhook token Anda>`
+
+Fitur:
+
+- Dedup otomatis via `source_key` (`logs/hris-delivered-keys.json`)
+- Retry hingga `HRIS_PUSH_RETRY_MAX` kali
+- Gagal permanen dicatat di `logs/hris-push-failed.txt`
+- `HRIS_PUSH_FROM_CRON=true` mengirim data dari cron pull; tetap aman dari double karena dedup
+
+### Contoh penerima di Laravel (HRIS)
+
+```php
+// routes/api.php
+Route::post('/attendance/webhook', [AttendanceWebhookController::class, 'store']);
+
+// app/Http/Controllers/AttendanceWebhookController.php
+public function store(Request $request)
+{
+    $token = $request->header('X-Fingerspot-Token');
+
+    abort_unless($token === config('services.absensi.webhook_token'), 401);
+
+    // Idempotensi: cek source_key sudah diproses
+    $exists = AttendanceLog::where('source_key', $request->input('source_key'))->exists();
+    if ($exists) {
+        return response()->json(['success' => true, 'message' => 'already processed']);
+    }
+
+    AttendanceLog::create([
+        'source_key' => $request->input('source_key'),
+        'pin' => $request->input('pin'),
+        'cloud_id' => $request->input('cloud_id'),
+        'machine_name' => $request->input('machine_name'),
+        'scan_date' => $request->input('scan_date'),
+        'verify' => $request->input('verify'),
+        'status_scan' => $request->input('status_scan'),
+        'photo_url' => $request->input('photo_url'),
+    ]);
+
+    return response()->json(['success' => true], 201);
+}
+```
+
+Setelah push aktif, HRIS **tidak perlu** lagi cron `GET /api/sync` atau `GET /api/attlog/combined` untuk data baru (boleh dipertahankan sebagai fallback).
+
+## Contoh Laravel (Inbound ke server Absensi)
 
 ```php
 use Illuminate\Support\Facades\Http;

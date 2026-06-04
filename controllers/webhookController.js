@@ -2,6 +2,8 @@ const fs = require('fs/promises');
 const path = require('path');
 const { getMachineMap } = require('../config/runtimeConfig');
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
+const { pushAttlogToHris } = require('../services/hrisPush');
+const { buildSourceKey } = require('../utils/sourceKey');
 
 const logsFilePath = path.join(process.cwd(), 'logs', 'data.txt');
 const attlogFilePath = path.join(process.cwd(), 'logs', 'attlog.txt');
@@ -136,7 +138,12 @@ function buildAttlogRow(payload) {
   }
 
   return {
-    source_key: `webhook|${payload.id}`,
+    source_key: buildSourceKey(String(cloudId), {
+      pin: data.pin,
+      scan_date: data.scan || data.scan_date,
+      verify: typeof data.verify === 'number' ? data.verify : null,
+      status_scan: typeof data.status_scan === 'number' ? data.status_scan : null,
+    }),
     cloud_id: String(cloudId),
     trans_id: payload?.body?.trans_id || null,
     pin: String(data.pin),
@@ -221,6 +228,14 @@ async function storeWebhook(req, res) {
   await fs.appendFile(logsFilePath, `${JSON.stringify(payload)}\n`, 'utf8');
   await appendJsonLine(resolveWebhookLogFilePath(req.body), payload);
   await persistWebhookToSupabase(payload);
+
+  const attlogRow = buildAttlogRow(payload);
+  if (attlogRow) {
+    attlogRow.machine_name = payload.machineName;
+    pushAttlogToHris(attlogRow).catch((error) => {
+      console.error(`[hris-push] webhook background error: ${error.message}`);
+    });
+  }
 
   return res.status(201).json({
     success: true,

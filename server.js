@@ -11,6 +11,7 @@ const apiRoutes = require('./routes/api');
 const { runEmployeeSync } = require('./controllers/userSyncController');
 const { getActiveSyncJobs } = require('./config/runtimeStore');
 const { initAttlogCron } = require('./config/attlogCron');
+const { logHrisPushStartup } = require('./services/hrisPush');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -26,6 +27,8 @@ async function ensureRuntimeFiles() {
     { fileName: 'other.txt', content: '' },
     { fileName: 'sync-state.json', content: JSON.stringify({ machines: {} }, null, 2) },
     { fileName: 'sync-jobs.override.json', content: JSON.stringify({ sync_jobs: [] }, null, 2) },
+    { fileName: 'hris-delivered-keys.json', content: JSON.stringify({ keys: [] }, null, 2) },
+    { fileName: 'hris-push-failed.txt', content: '' },
   ];
 
   for (const item of fileDefaults) {
@@ -80,6 +83,7 @@ app.use((err, req, res, next) => {
 
 app.listen(port, () => {
   console.log(`Server berjalan di port ${port}`);
+  logHrisPushStartup();
 
   // Attlog pull cron: ambil data langsung dari API Fingerspot secara berkala
   initAttlogCron(true);

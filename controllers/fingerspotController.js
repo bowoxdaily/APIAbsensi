@@ -36,6 +36,9 @@ function getKeepAliveAgent(url) {
   return url.startsWith('https') ? keepAliveHttpsAgent : keepAliveHttpAgent;
 }
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
+const { getMachineMap } = require('../config/runtimeConfig');
+const { pushAttlogsToHris } = require('../services/hrisPush');
+const { buildSourceKey } = require('../utils/sourceKey');
 const {
   createRequestId,
   registerSession,
@@ -217,14 +220,6 @@ async function requestGetUserInfo(payload, { signal, apiToken } = {}) {
   };
 }
 
-function buildSourceKey(cloudId, row) {
-  const pin = row?.pin ?? '';
-  const scanDate = row?.scan_date ?? '';
-  const verify = row?.verify ?? '';
-  const statusScan = row?.status_scan ?? '';
-  return `${cloudId}|${pin}|${scanDate}|${verify}|${statusScan}`;
-}
-
 function normalizeAttlogRows(rows, meta) {
   return rows.map((row) => ({
     source_key: buildSourceKey(meta.cloud_id, row),
@@ -294,6 +289,15 @@ async function saveAttlogsToSupabase(rows, meta) {
       message: error.message,
     };
   }
+
+  const machineMap = getMachineMap();
+  const rowsForHris = payload.map((row) => ({
+    ...row,
+    machine_name: machineMap[row.cloud_id] || null,
+  }));
+  pushAttlogsToHris(rowsForHris).catch((pushError) => {
+    console.error(`[hris-push] manual pull background error: ${pushError.message}`);
+  });
 
   return {
     success: true,
