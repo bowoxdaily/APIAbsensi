@@ -111,6 +111,30 @@ function extractHrisError(result) {
   return firstResult?.message || body.message || `HTTP ${result.status}`;
 }
 
+/**
+ * Cek apakah error adalah non-recoverable business rule error dari HRIS.
+ * Jika true, jangan retry — langsung fail dan catat.
+ */
+function isNonRecoverableHrisError(errorMessage) {
+  if (!errorMessage || typeof errorMessage !== 'string') {
+    return false;
+  }
+
+  const lowerError = errorMessage.toLowerCase();
+
+  // Business rule errors dari HRIS (non-recoverable, tidak perlu retry)
+  const nonRecoverablePatterns = [
+    'scan during work hours', // Scan di luar jam kerja
+    'before', // e.g. "before 16:30"
+    'weekend', // e.g. "< 6 hours on weekend"
+    'duplicate scan', // Scan duplikat
+    'invalid pin', // PIN tidak valid
+    'employee not found', // Karyawan tidak terdaftar
+  ];
+
+  return nonRecoverablePatterns.some((pattern) => lowerError.includes(pattern));
+}
+
 function buildAuthHeaders() {
   const headers = {
     'Content-Type': 'application/json',
@@ -261,6 +285,15 @@ async function pushAttlogToHris(attlogRow, options = {}) {
       }
 
       lastError = extractHrisError(result);
+      
+      // Jika error adalah business rule non-recoverable, jangan retry
+      if (isNonRecoverableHrisError(lastError)) {
+        console.warn(
+          `[hris-push] gagal attempt ${attempt}/${HRIS_PUSH_RETRY_MAX} pin=${payload.pin} — ${lastError} (non-recoverable, stop retry)`
+        );
+        break;
+      }
+
       console.warn(
         `[hris-push] gagal attempt ${attempt}/${HRIS_PUSH_RETRY_MAX} pin=${payload.pin} — ${lastError}`
       );
@@ -338,4 +371,5 @@ module.exports = {
   pushAttlogToHris,
   pushAttlogsToHris,
   logHrisPushStartup,
+  isNonRecoverableHrisError,
 };
