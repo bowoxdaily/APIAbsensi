@@ -20,13 +20,6 @@ function isAuthorized(req) {
 }
 
 async function getRuntimeConfig(req, res) {
-  if (!isAuthorized(req)) {
-    return res.status(401).json({
-      success: false,
-      message: 'Unauthorized',
-    });
-  }
-
   const data = await getRuntimeConfigSummary();
   return res.json({
     success: true,
@@ -62,13 +55,6 @@ async function updateSyncJobs(req, res) {
 }
 
 async function getSyncJobsOverride(req, res) {
-  if (!isAuthorized(req)) {
-    return res.status(401).json({
-      success: false,
-      message: 'Unauthorized',
-    });
-  }
-
   const jobs = await readSyncJobsOverride();
   return res.json({
     success: true,
