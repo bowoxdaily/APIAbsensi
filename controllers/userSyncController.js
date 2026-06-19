@@ -521,12 +521,13 @@ async function runEmployeeSync(rawConfig = {}) {
   }
 
   if (!users.length) {
+    const noNewBecauseSkippedAll = skipExistingPins && skippedExistingCount > 0;
     finishSession(requestId, { status: 'completed', cancelled: false, total: 0 });
     return {
       statusCode: 404,
       payload: {
         success: false,
-        message: skipExistingPins
+        message: noNewBecauseSkippedAll
           ? 'Tidak ada data baru untuk disinkronkan. Semua PIN sudah ada di mesin target.'
           : 'Tidak ada data userinfo dari mesin sumber. Jalankan get_userinfo dulu sampai webhook masuk.',
         count: 0,
