@@ -374,9 +374,14 @@ function bindRawLogsTable() {
 async function runSync(forceDryRun) {
   const requestId = `sync_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   activeRequests.sync = requestId;
+  const startPinRaw = document.getElementById('syncStartPin').value;
+  const endPinRaw = document.getElementById('syncEndPin').value;
+
   const body = {
     source_cloud_id: document.getElementById('syncSourceCloudId').value.trim(),
     target_cloud_id: document.getElementById('syncTargetCloudId').value.trim(),
+    start_pin: startPinRaw ? Number(startPinRaw) : null,
+    end_pin: endPinRaw ? Number(endPinRaw) : null,
     trans_prefix: 'copy-user-ui',
     limit: Number(document.getElementById('syncLimit').value),
     concurrency: Number(document.getElementById('syncConcurrency').value),

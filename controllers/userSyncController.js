@@ -39,6 +39,7 @@ const SYNC_SKIP_EXISTING_DB_LIMIT = Math.max(
   Number(process.env.SYNC_SKIP_EXISTING_DB_LIMIT || 10000),
   100
 );
+const SYNC_SOURCE_DB_LIMIT = Math.max(Number(process.env.SYNC_SOURCE_DB_LIMIT || 20000), 100);
 
 function sleep(ms) {
   if (ms <= 0) {
@@ -351,6 +352,48 @@ function isPinWithinRange(pin, startPin, endPin) {
   return true;
 }
 
+function mapEmployeeRowToUser(item) {
+  return {
+    pin: item.pin || '',
+    name: item.name || '',
+    privilege: String(item.privilege || '0'),
+    password: item.password || '',
+    rfid: item.rfid || '',
+    finger: String(item.finger || '0'),
+    face: String(item.face || '0'),
+    vein: String(item.vein || '0'),
+    template: item.template || '',
+    source_cloud_id: item.source_cloud_id || null,
+    received_at: item.received_at || null,
+  };
+}
+
+async function getUsersFromSupabase(sourceCloudId, startPin, endPin, limit) {
+  if (!hasSupabaseConfig()) {
+    return [];
+  }
+
+  const supabase = getSupabaseClient();
+  const tableName = getSupabaseConfig().employeesTable;
+  const { data, error } = await supabase
+    .from(tableName)
+    .select('*')
+    .eq('source_cloud_id', sourceCloudId)
+    .limit(SYNC_SOURCE_DB_LIMIT);
+
+  if (error || !Array.isArray(data)) {
+    return [];
+  }
+
+  const users = data
+    .map(mapEmployeeRowToUser)
+    .filter((user) => isPinWithinRange(user.pin, startPin, endPin))
+    .sort((a, b) => comparePins(a.pin, b.pin))
+    .slice(0, limit);
+
+  return users;
+}
+
 async function runEmployeeSync(rawConfig = {}) {
   const {
     sourceCloudId,
@@ -401,62 +444,71 @@ async function runEmployeeSync(rawConfig = {}) {
     };
   }
 
-  const records = await getWebhookRecords();
   const normalizedStartPin = normalizePinBoundary(startPin);
   const normalizedEndPin = normalizePinBoundary(endPin);
-  const initialUsers = extractUsersFromRecords(records, sourceCloudId)
-    .filter((user) => isPinWithinRange(user.pin, normalizedStartPin, normalizedEndPin))
-    .slice(0, limit);
-  const missingPins = buildMissingNumericPins(initialUsers);
-  const missingPinsLimited = missingPins.slice(0, SYNC_RECHECK_MAX_REQUESTS);
+  let sourceType = 'supabase';
+  let users = await getUsersFromSupabase(sourceCloudId, normalizedStartPin, normalizedEndPin, limit);
+  let records = [];
   const recheckedPins = [];
-  let users = initialUsers;
+  let missingPins = [];
+  let missingPinsLimited = [];
   let cancelled = false;
   let skippedExistingCount = 0;
 
-  if (missingPinsLimited.length) {
-    const recheckStartedAt = new Date().toISOString();
+  if (!users.length) {
+    sourceType = 'logs';
+    records = await getWebhookRecords();
+    const initialUsers = extractUsersFromRecords(records, sourceCloudId)
+      .filter((user) => isPinWithinRange(user.pin, normalizedStartPin, normalizedEndPin))
+      .slice(0, limit);
+    missingPins = buildMissingNumericPins(initialUsers);
+    missingPinsLimited = missingPins.slice(0, SYNC_RECHECK_MAX_REQUESTS);
+    users = initialUsers;
 
-    for (let i = 0; i < missingPinsLimited.length; i += concurrency) {
-      if (getSession(requestId)?.cancelled) {
-        cancelled = true;
-        break;
-      }
+    if (missingPinsLimited.length) {
+      const recheckStartedAt = new Date().toISOString();
 
-      const batch = missingPinsLimited.slice(i, i + concurrency);
-      const batchResults = await Promise.all(
-        batch.map(async (pin, batchIndex) => {
-          try {
-            const upstream = await requestSourceUserInfo(sourceCloudId, pin, transPrefix, i + batchIndex, sourceToken);
-            if (upstream.ok) {
-              return pin;
+      for (let i = 0; i < missingPinsLimited.length; i += concurrency) {
+        if (getSession(requestId)?.cancelled) {
+          cancelled = true;
+          break;
+        }
+
+        const batch = missingPinsLimited.slice(i, i + concurrency);
+        const batchResults = await Promise.all(
+          batch.map(async (pin, batchIndex) => {
+            try {
+              const upstream = await requestSourceUserInfo(sourceCloudId, pin, transPrefix, i + batchIndex, sourceToken);
+              if (upstream.ok) {
+                return pin;
+              }
+            } catch (error) {
+              console.error(`[sync-userinfo] recheck pin ${pin} gagal: ${error.message}`);
             }
-          } catch (error) {
-            console.error(`[sync-userinfo] recheck pin ${pin} gagal: ${error.message}`);
+            return null;
+          })
+        );
+
+        for (const pin of batchResults) {
+          if (pin !== null) {
+            recheckedPins.push(pin);
           }
-          return null;
-        })
-      );
+        }
 
-      for (const pin of batchResults) {
-        if (pin !== null) {
-          recheckedPins.push(pin);
+        if (recheckDelayMs > 0 && i + concurrency < missingPinsLimited.length) {
+          await sleep(recheckDelayMs);
         }
       }
 
-      if (recheckDelayMs > 0 && i + concurrency < missingPinsLimited.length) {
-        await sleep(recheckDelayMs);
-      }
-    }
-
-    if (!cancelled) {
-      const recheckedUsers = await waitForRecheckedPins(sourceCloudId, missingPinsLimited, recheckStartedAt);
-      if (recheckedUsers.length) {
-        const mergedUsers = new Map(users.map((user) => [String(user.pin), user]));
-        for (const user of recheckedUsers) {
-          mergedUsers.set(String(user.pin), user);
+      if (!cancelled) {
+        const recheckedUsers = await waitForRecheckedPins(sourceCloudId, missingPinsLimited, recheckStartedAt);
+        if (recheckedUsers.length) {
+          const mergedUsers = new Map(users.map((user) => [String(user.pin), user]));
+          for (const user of recheckedUsers) {
+            mergedUsers.set(String(user.pin), user);
+          }
+          users = Array.from(mergedUsers.values()).sort((a, b) => comparePins(a.pin, b.pin)).slice(0, limit);
         }
-        users = Array.from(mergedUsers.values()).sort((a, b) => comparePins(a.pin, b.pin)).slice(0, limit);
       }
     }
   }
@@ -480,6 +532,7 @@ async function runEmployeeSync(rawConfig = {}) {
         count: 0,
         skipped_existing_count: skippedExistingCount,
         skip_existing_pins: skipExistingPins,
+        source: sourceType,
         data: [],
         request_id: requestId,
       },
@@ -502,6 +555,7 @@ async function runEmployeeSync(rawConfig = {}) {
         total_candidate_count: totalCandidateCount,
         skipped_existing_count: skippedExistingCount,
         skip_existing_pins: skipExistingPins,
+        source: sourceType,
         target_cloud_id: targetCloudId,
         start_pin: normalizedStartPin,
         end_pin: normalizedEndPin,
@@ -619,6 +673,7 @@ async function runEmployeeSync(rawConfig = {}) {
       target_cloud_id: targetCloudId,
       start_pin: normalizedStartPin,
       end_pin: normalizedEndPin,
+      source: sourceType,
       total_candidate_count: totalCandidateCount,
       skipped_existing_count: skippedExistingCount,
       skip_existing_pins: skipExistingPins,
