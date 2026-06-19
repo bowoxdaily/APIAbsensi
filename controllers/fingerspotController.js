@@ -27,6 +27,12 @@ const USERINFO_BULK_DEFAULT_CONCURRENCY = Math.min(
 const USERINFO_BULK_BATCH_DELAY_MS = Math.max(Number(process.env.USERINFO_BULK_BATCH_DELAY_MS || 100), 0);
 const USERINFO_BULK_MAX_PINS = Math.max(Number(process.env.USERINFO_BULK_MAX_PINS || 1000), 1);
 const USERINFO_REQUEST_TIMEOUT_MS = Math.max(Number(process.env.USERINFO_REQUEST_TIMEOUT_MS || 10000), 1000);
+const USERINFO_BULK_INCLUDE_RESULTS_DEFAULT =
+  String(process.env.USERINFO_BULK_INCLUDE_RESULTS_DEFAULT || 'false').toLowerCase() === 'true';
+const USERINFO_BULK_MAX_RESULT_ITEMS = Math.max(
+  Number(process.env.USERINFO_BULK_MAX_RESULT_ITEMS || 300),
+  10
+);
 
 // Keep-alive agents for connection reuse (avoids TCP/TLS handshake per request)
 const keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 25, keepAliveMsecs: 30000 });
@@ -420,6 +426,10 @@ async function callGetUserInfoBulk(req, res) {
   const pinWidth = Math.max(Number(req.body?.pin_width || 0), 0);
   const transPrefix = req.body?.trans_prefix || 'userinfo-bulk';
   const dryRun = Boolean(req.body?.dry_run);
+  const includeResults =
+    req.body?.include_results === undefined
+      ? USERINFO_BULK_INCLUDE_RESULTS_DEFAULT
+      : String(req.body?.include_results).toLowerCase() === 'true';
   const concurrency = Math.min(
     Math.max(Number(req.body?.concurrency || USERINFO_BULK_DEFAULT_CONCURRENCY), 1),
     20
@@ -483,10 +493,28 @@ async function callGetUserInfoBulk(req, res) {
   }
 
   const startTime = Date.now();
-  const results = [];
+  const results = includeResults ? [] : null;
+  const resultPreview = [];
+  let processedCount = 0;
   let successCount = 0;
   let cancelled = false;
   let timedOutCount = 0;
+
+  function pushResultRow(row) {
+    if (results) {
+      results.push(row);
+      return;
+    }
+
+    if (!row.success && resultPreview.length < USERINFO_BULK_MAX_RESULT_ITEMS) {
+      resultPreview.push({
+        pin: row.pin,
+        success: row.success,
+        upstreamStatus: row.upstreamStatus,
+        upstream: row.upstream,
+      });
+    }
+  }
 
   async function processPin(pin, index) {
     if (getSession(requestId)?.cancelled) {
@@ -512,7 +540,8 @@ async function callGetUserInfoBulk(req, res) {
           successCount += 1;
         }
 
-        results.push({
+        processedCount += 1;
+        pushResultRow({
           pin,
           success: rowSuccess,
           upstreamStatus: upstream.status,
@@ -528,7 +557,8 @@ async function callGetUserInfoBulk(req, res) {
         timedOutCount += 1;
       }
 
-      results.push({
+      processedCount += 1;
+      pushResultRow({
         pin,
         success: false,
         upstreamStatus: 0,
@@ -580,32 +610,43 @@ async function callGetUserInfoBulk(req, res) {
   await runPipeline();
 
   const elapsedMs = Date.now() - startTime;
-  const hasFailure = successCount !== results.length;
+  const hasFailure = successCount !== processedCount;
   finishSession(requestId, {
     status: cancelled ? 'cancelled' : 'completed',
     cancelled,
-    total: results.length,
+    total: processedCount,
     successCount,
     elapsedMs,
   });
 
-  return res.status(hasFailure ? 207 : 200).json({
+  const response = {
     success: !hasFailure,
     message: hasFailure
       ? 'Sebagian request get_userinfo gagal dikirim'
       : 'Semua request get_userinfo berhasil dikirim',
     cloud_id: sourceCloudId,
-    total: results.length,
+    total: processedCount,
     success_count: successCount,
-    failed_count: results.length - successCount,
+    failed_count: processedCount - successCount,
     timed_out_count: timedOutCount,
     concurrency,
     batch_delay_ms: batchDelayMs,
     elapsed_ms: elapsedMs,
     cancelled,
     request_id: requestId,
-    results,
-  });
+    include_results: includeResults,
+  };
+
+  if (includeResults) {
+    response.results = results;
+  } else {
+    response.results_preview = resultPreview;
+    response.results_preview_count = resultPreview.length;
+    response.results_preview_limited =
+      hasFailure && processedCount - successCount > resultPreview.length;
+  }
+
+  return res.status(hasFailure ? 207 : 200).json(response);
 }
 
 async function callGetAttlog(req, res) {
