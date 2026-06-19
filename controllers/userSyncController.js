@@ -40,6 +40,9 @@ const SYNC_SKIP_EXISTING_DB_LIMIT = Math.max(
   100
 );
 const SYNC_SOURCE_DB_LIMIT = Math.max(Number(process.env.SYNC_SOURCE_DB_LIMIT || 20000), 100);
+const SYNC_SET_USERINFO_MODE = String(process.env.SYNC_SET_USERINFO_MODE || 'full').toLowerCase();
+const SYNC_SET_USERINFO_FALLBACK_BASIC =
+  String(process.env.SYNC_SET_USERINFO_FALLBACK_BASIC || 'true').toLowerCase() === 'true';
 
 function sleep(ms) {
   if (ms <= 0) {
@@ -271,6 +274,41 @@ async function callSetUserInfo(payload, apiToken) {
     clearTimeout(timeoutId);
     throw error;
   }
+}
+
+function isSetUserInfoSuccess(upstream) {
+  return Boolean(upstream?.ok && upstream?.data?.success !== false);
+}
+
+function buildSetUserInfoData(user, mode = 'full') {
+  if (mode === 'basic') {
+    return {
+      pin: user.pin,
+      name: user.name,
+      privilege: user.privilege,
+    };
+  }
+
+  return {
+    pin: user.pin,
+    name: user.name,
+    privilege: user.privilege,
+    password: user.password,
+    rfid: user.rfid,
+    finger: user.finger,
+    face: user.face,
+    vein: user.vein,
+    template: user.template,
+  };
+}
+
+function buildSetUserInfoPayload({ user, targetCloudId, transPrefix, index, mode }) {
+  return {
+    type: 'set_userinfo',
+    trans_id: `${transPrefix}-${Date.now()}-${index + 1}${mode === 'basic' ? '-basic' : ''}`,
+    cloud_id: targetCloudId,
+    data: buildSetUserInfoData(user, mode),
+  };
 }
 
 function buildSyncConfig(input = {}) {
@@ -577,31 +615,48 @@ async function runEmployeeSync(rawConfig = {}) {
       return;
     }
 
-    const payload = {
-      type: 'set_userinfo',
-      trans_id: `${transPrefix}-${Date.now()}-${index + 1}`,
-      cloud_id: targetCloudId,
-      data: {
-        pin: user.pin,
-        name: user.name,
-        privilege: user.privilege,
-        password: user.password,
-        rfid: user.rfid,
-        finger: user.finger,
-        face: user.face,
-        vein: user.vein,
-        template: user.template,
-      },
-    };
-
     try {
-      const upstream = await callSetUserInfo(payload, targetToken);
-      const rowSuccess = upstream.ok && upstream.data?.success !== false;
+      const preferredMode = SYNC_SET_USERINFO_MODE === 'basic' ? 'basic' : 'full';
+      const payload = buildSetUserInfoPayload({
+        user,
+        targetCloudId,
+        transPrefix,
+        index,
+        mode: preferredMode,
+      });
+
+      let upstream = await callSetUserInfo(payload, targetToken);
+      let usedMode = preferredMode;
+      let fallbackTried = false;
+
+      if (
+        !isSetUserInfoSuccess(upstream) &&
+        preferredMode === 'full' &&
+        SYNC_SET_USERINFO_FALLBACK_BASIC
+      ) {
+        fallbackTried = true;
+        const basicPayload = buildSetUserInfoPayload({
+          user,
+          targetCloudId,
+          transPrefix,
+          index,
+          mode: 'basic',
+        });
+        const basicUpstream = await callSetUserInfo(basicPayload, targetToken);
+        if (isSetUserInfoSuccess(basicUpstream)) {
+          upstream = basicUpstream;
+          usedMode = 'basic';
+        }
+      }
+
+      const rowSuccess = isSetUserInfoSuccess(upstream);
       results.push({
         pin: user.pin,
         success: rowSuccess,
         upstreamStatus: upstream.status,
         upstream: upstream.data,
+        set_mode: usedMode,
+        fallback_basic_tried: fallbackTried,
       });
     } catch (error) {
       results.push({
@@ -609,6 +664,8 @@ async function runEmployeeSync(rawConfig = {}) {
         success: false,
         upstreamStatus: 0,
         upstream: { message: error.message },
+        set_mode: SYNC_SET_USERINFO_MODE === 'basic' ? 'basic' : 'full',
+        fallback_basic_tried: false,
       });
     }
   }
