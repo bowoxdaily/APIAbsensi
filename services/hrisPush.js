@@ -10,6 +10,7 @@ const { buildSourceKey } = require('../utils/sourceKey');
 
 const deliveredKeysPath = path.join(process.cwd(), 'logs', 'hris-delivered-keys.json');
 const failedLogPath = path.join(process.cwd(), 'logs', 'hris-push-failed.txt');
+const MAX_LOG_FILE_BYTES = Math.max(Number(process.env.MAX_LOG_FILE_BYTES || 10 * 1024 * 1024), 1024 * 1024);
 
 const HRIS_WEBHOOK_URL = (process.env.HRIS_WEBHOOK_URL || '').trim();
 const HRIS_WEBHOOK_TOKEN = process.env.HRIS_WEBHOOK_TOKEN || '';
@@ -221,6 +222,23 @@ async function wasDelivered(sourceKey) {
 
 async function appendFailedLog(entry) {
   await fs.mkdir(path.dirname(failedLogPath), { recursive: true });
+
+  try {
+    const stat = await fs.stat(failedLogPath);
+    if (stat.size > MAX_LOG_FILE_BYTES) {
+      const raw = await fs.readFile(failedLogPath, 'utf8');
+      const lines = raw.split('\n').filter(Boolean);
+      const trimmedLines = lines.slice(Math.floor(lines.length / 2));
+      await fs.writeFile(
+        failedLogPath,
+        trimmedLines.join('\n') + (trimmedLines.length ? '\n' : ''),
+        'utf8'
+      );
+    }
+  } catch (error) {
+    // Best effort trim: gagal trim tidak boleh memblokir append log.
+  }
+
   await fs.appendFile(failedLogPath, `${JSON.stringify(entry)}\n`, 'utf8');
 }
 

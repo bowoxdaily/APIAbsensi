@@ -390,6 +390,7 @@ async function runEmployeeSync(rawConfig = {}) {
   const missingPinsLimited = missingPins.slice(0, SYNC_RECHECK_MAX_REQUESTS);
   const recheckedPins = [];
   let users = initialUsers;
+  let cancelled = false;
 
   if (missingPinsLimited.length) {
     const recheckStartedAt = new Date().toISOString();
@@ -474,7 +475,6 @@ async function runEmployeeSync(rawConfig = {}) {
 
   const startTime = Date.now();
   const results = [];
-  let cancelled = false;
   async function processUser(user, index) {
     if (getSession(requestId)?.cancelled) {
       cancelled = true;

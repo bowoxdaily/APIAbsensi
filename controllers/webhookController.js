@@ -9,6 +9,7 @@ const logsFilePath = path.join(process.cwd(), 'logs', 'data.txt');
 const attlogFilePath = path.join(process.cwd(), 'logs', 'attlog.txt');
 const otherFilePath = path.join(process.cwd(), 'logs', 'other.txt');
 const syncStateFilePath = path.join(process.cwd(), 'logs', 'sync-state.json');
+const MAX_LOG_FILE_BYTES = Math.max(Number(process.env.MAX_LOG_FILE_BYTES || 10 * 1024 * 1024), 1024 * 1024);
 const API_TOKEN = process.env.API_TOKEN || '';
 const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN || '';
 
@@ -32,6 +33,19 @@ async function ensureNamedLogFile(filePath) {
 
 async function appendJsonLine(filePath, payload) {
   await ensureNamedLogFile(filePath);
+
+  try {
+    const stat = await fs.stat(filePath);
+    if (stat.size > MAX_LOG_FILE_BYTES) {
+      const raw = await fs.readFile(filePath, 'utf8');
+      const lines = raw.split('\n').filter(Boolean);
+      const trimmedLines = lines.slice(Math.floor(lines.length / 2));
+      await fs.writeFile(filePath, trimmedLines.join('\n') + (trimmedLines.length ? '\n' : ''), 'utf8');
+    }
+  } catch (error) {
+    // Best effort trim: gagal trim tidak boleh memblokir append log.
+  }
+
   await fs.appendFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');
 }
 
@@ -225,7 +239,7 @@ async function storeWebhook(req, res) {
   };
 
   await ensureLogFile();
-  await fs.appendFile(logsFilePath, `${JSON.stringify(payload)}\n`, 'utf8');
+  await appendJsonLine(logsFilePath, payload);
   await appendJsonLine(resolveWebhookLogFilePath(req.body), payload);
   await persistWebhookToSupabase(payload);
 
