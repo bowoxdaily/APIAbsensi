@@ -35,10 +35,22 @@ const SKIP_WEBHOOK_TYPES = ENABLE_USERINFO_WEBHOOK_LOG
   ? new Set()
   : new Set(['get_userinfo', 'set_userinfo', 'userinfo']);
 
-function resolveWebhookLogFilePath(body = {}) {
+function isLikelyAttlogPayload(body = {}) {
   const type = String(body?.type || '').toLowerCase();
-
   if (type === 'attlog') {
+    return true;
+  }
+
+  const data = body?.data || {};
+  const hasPin = data.pin !== undefined && data.pin !== null && String(data.pin).trim() !== '';
+  const hasScan = Boolean(data.scan || data.scan_date || body.scan || body.scan_date);
+  const hasCloud = Boolean(body.cloud_id || body.cloudId || body.cloudid);
+
+  return hasPin && hasScan && hasCloud;
+}
+
+function resolveWebhookLogFilePath(body = {}) {
+  if (isLikelyAttlogPayload(body)) {
     return attlogFilePath;
   }
 
@@ -127,11 +139,13 @@ function buildAttlogRow(payload) {
   const data = payload?.body?.data || {};
   const cloudId = payload?.machineId || payload?.body?.cloud_id || payload?.body?.cloudId || null;
 
-  if (String(payload?.body?.type || '').toLowerCase() !== 'attlog') {
+  if (!isLikelyAttlogPayload(payload?.body || {})) {
     return null;
   }
 
-  if (!cloudId || !data.pin || !(data.scan || data.scan_date)) {
+  const scanTime = data.scan || data.scan_date || payload?.body?.scan || payload?.body?.scan_date || null;
+
+  if (!cloudId || !data.pin || !scanTime) {
     return null;
   }
 
@@ -145,12 +159,45 @@ function buildAttlogRow(payload) {
     cloud_id: String(cloudId),
     trans_id: payload?.body?.trans_id || null,
     pin: String(data.pin),
-    scan_date: data.scan || data.scan_date,
+    scan_date: scanTime,
     verify: typeof data.verify === 'number' ? data.verify : null,
     status_scan: typeof data.status_scan === 'number' ? data.status_scan : null,
     photo_url: data.photo_url || null,
     raw_payload: payload.body || null,
     fetched_at: payload.receivedAt || new Date().toISOString(),
+  };
+}
+
+function buildUserInfoRow(payload) {
+  const body = payload?.body || {};
+  const type = String(body?.type || '').toLowerCase();
+  if (!['get_userinfo', 'set_userinfo', 'userinfo'].includes(type)) {
+    return null;
+  }
+
+  const data = body?.data || {};
+  const cloudId = payload?.machineId || body?.cloud_id || body?.cloudId || null;
+  const pin = data?.pin;
+
+  if (!cloudId || pin === undefined || pin === null || String(pin).trim() === '') {
+    return null;
+  }
+
+  return {
+    source_key: `userinfo|${String(cloudId)}|${String(pin).trim()}`,
+    source_cloud_id: String(cloudId),
+    pin: String(pin).trim(),
+    name: data?.name || null,
+    privilege: data?.privilege !== undefined && data?.privilege !== null ? String(data.privilege) : null,
+    password: data?.password || null,
+    rfid: data?.rfid || null,
+    finger: data?.finger !== undefined && data?.finger !== null ? String(data.finger) : null,
+    face: data?.face !== undefined && data?.face !== null ? String(data.face) : null,
+    vein: data?.vein !== undefined && data?.vein !== null ? String(data.vein) : null,
+    template: data?.template || null,
+    raw_payload: body,
+    received_at: payload?.receivedAt || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   };
 }
 
@@ -164,11 +211,21 @@ async function persistWebhookToSupabase(payload) {
   const supabase = getSupabaseClient();
   const config = getSupabaseConfig();
   const attlogRow = buildAttlogRow(payload);
+  const userInfoRow = buildUserInfoRow(payload);
 
   if (attlogRow) {
     const { error } = await supabase.from(config.table).upsert(attlogRow, { onConflict: 'source_key' });
     if (error) {
       console.error(`[webhook-db] gagal simpan attlog: ${error.message}`);
+    }
+  }
+
+  if (userInfoRow) {
+    const { error } = await supabase
+      .from(config.employeesTable)
+      .upsert(userInfoRow, { onConflict: 'source_key' });
+    if (error) {
+      console.error(`[webhook-db] gagal simpan userinfo: ${error.message}`);
     }
   }
 }
@@ -194,15 +251,6 @@ async function storeWebhook(req, res) {
     });
   }
 
-  // Skip event userinfo — tidak perlu diproses, hemat resource server
-  const incomingType = String(req.body?.type || '').toLowerCase();
-  if (SKIP_WEBHOOK_TYPES.has(incomingType)) {
-    return res.status(200).json({
-      success: true,
-      message: 'Event diabaikan (set ENABLE_USERINFO_WEBHOOK_LOG=true untuk menyimpan userinfo)',
-    });
-  }
-
   const machineId = normalizeMachineId(req);
   const payload = {
     id: `wh_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -221,6 +269,16 @@ async function storeWebhook(req, res) {
     },
     body: req.body,
   };
+
+  // Skip event userinfo — tidak perlu diproses, hemat resource server
+  const incomingType = String(req.body?.type || '').toLowerCase();
+  if (SKIP_WEBHOOK_TYPES.has(incomingType)) {
+    await persistWebhookToSupabase(payload);
+    return res.status(200).json({
+      success: true,
+      message: 'Event diabaikan dari log, tetapi userinfo tetap disimpan ke DB',
+    });
+  }
 
   await ensureLogFile();
   await appendJsonLine(logsFilePath, payload);
