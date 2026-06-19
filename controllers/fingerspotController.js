@@ -1,5 +1,3 @@
-const http = require('http');
-const https = require('https');
 const API_BASE_URL = process.env.FINGERSPOT_BASE_URL || 'https://developer.fingerspot.io/api';
 const FINGERSPOT_API_TOKEN = process.env.FINGERSPOT_API_TOKEN || '';
 
@@ -34,13 +32,6 @@ const USERINFO_BULK_MAX_RESULT_ITEMS = Math.max(
   10
 );
 
-// Keep-alive agents for connection reuse (avoids TCP/TLS handshake per request)
-const keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 25, keepAliveMsecs: 30000 });
-const keepAliveHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 25, keepAliveMsecs: 30000 });
-
-function getKeepAliveAgent(url) {
-  return url.startsWith('https') ? keepAliveHttpsAgent : keepAliveHttpAgent;
-}
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
 const { getMachineMap } = require('../config/runtimeConfig');
 const { pushAttlogsToHris } = require('../services/hrisPush');
@@ -202,7 +193,6 @@ async function requestGetUserInfo(payload, { signal, apiToken } = {}) {
       Connection: 'keep-alive',
     },
     body: JSON.stringify(payload),
-    dispatcher: getKeepAliveAgent(url),
   };
 
   if (signal) {

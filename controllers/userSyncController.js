@@ -1,7 +1,5 @@
 const fs = require('fs/promises');
 const path = require('path');
-const http = require('http');
-const https = require('https');
 const { createRequestId, registerSession, getSession, finishSession } = require('../config/requestRegistry');
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
 const { ensureFile, readRecentJsonLines } = require('../utils/logIO');
@@ -41,14 +39,6 @@ const SYNC_SKIP_EXISTING_DB_LIMIT = Math.max(
   Number(process.env.SYNC_SKIP_EXISTING_DB_LIMIT || 10000),
   100
 );
-
-// Keep-alive agents for connection reuse
-const keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 25, keepAliveMsecs: 30000 });
-const keepAliveHttpsAgent = new https.Agent({ keepAlive: true, maxSockets: 25, keepAliveMsecs: 30000 });
-
-function getKeepAliveAgent(url) {
-  return url.startsWith('https') ? keepAliveHttpsAgent : keepAliveHttpAgent;
-}
 
 function sleep(ms) {
   if (ms <= 0) {
@@ -184,7 +174,6 @@ async function requestSourceUserInfo(sourceCloudId, pin, transPrefix, index, api
         pin,
       }),
       signal: controller.signal,
-      dispatcher: getKeepAliveAgent(url),
     });
 
     clearTimeout(timeoutId);
@@ -261,7 +250,6 @@ async function callSetUserInfo(payload, apiToken) {
       },
       body: JSON.stringify(payload),
       signal: controller.signal,
-      dispatcher: getKeepAliveAgent(url),
     });
 
     clearTimeout(timeoutId);
