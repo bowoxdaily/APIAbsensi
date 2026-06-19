@@ -15,6 +15,8 @@ const LOG_TAIL_MAX_BYTES = Math.max(Number(process.env.LOG_TAIL_MAX_BYTES || 4 *
 const LOG_TAIL_MAX_LINES = Math.max(Number(process.env.LOG_TAIL_MAX_LINES || 10000), 100);
 const API_TOKEN = process.env.API_TOKEN || '';
 const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN || '';
+const ENABLE_USERINFO_WEBHOOK_LOG =
+  String(process.env.ENABLE_USERINFO_WEBHOOK_LOG || 'false').toLowerCase() === 'true';
 
 async function ensureLogFile() {
   await ensureFile(logsFilePath);
@@ -29,7 +31,9 @@ async function appendJsonLine(filePath, payload) {
   await appendJsonLineWithRotate(filePath, payload, { maxBytes: MAX_LOG_FILE_BYTES });
 }
 
-const SKIP_WEBHOOK_TYPES = new Set(['get_userinfo', 'set_userinfo', 'userinfo']);
+const SKIP_WEBHOOK_TYPES = ENABLE_USERINFO_WEBHOOK_LOG
+  ? new Set()
+  : new Set(['get_userinfo', 'set_userinfo', 'userinfo']);
 
 function resolveWebhookLogFilePath(body = {}) {
   const type = String(body?.type || '').toLowerCase();
@@ -195,7 +199,7 @@ async function storeWebhook(req, res) {
   if (SKIP_WEBHOOK_TYPES.has(incomingType)) {
     return res.status(200).json({
       success: true,
-      message: 'Event diabaikan (userinfo dinonaktifkan)',
+      message: 'Event diabaikan (set ENABLE_USERINFO_WEBHOOK_LOG=true untuk menyimpan userinfo)',
     });
   }
 
