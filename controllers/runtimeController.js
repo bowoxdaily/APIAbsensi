@@ -28,13 +28,6 @@ async function getRuntimeConfig(req, res) {
 }
 
 async function updateSyncJobs(req, res) {
-  if (!isAuthorized(req)) {
-    return res.status(401).json({
-      success: false,
-      message: 'Unauthorized',
-    });
-  }
-
   const syncJobs = req.body?.sync_jobs;
   if (!Array.isArray(syncJobs)) {
     return res.status(400).json({

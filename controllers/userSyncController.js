@@ -35,6 +35,12 @@ const SYNC_RECHECK_REQUEST_DELAY_MS = Math.max(Number(process.env.SYNC_RECHECK_R
 const SYNC_SET_USERINFO_DELAY_MS = Math.max(Number(process.env.SYNC_SET_USERINFO_DELAY_MS || 80), 0);
 const SYNC_RECHECK_MAX_REQUESTS = Math.max(Number(process.env.SYNC_RECHECK_MAX_REQUESTS || 300), 1);
 const SYNC_REQUEST_TIMEOUT_MS = Math.max(Number(process.env.SYNC_REQUEST_TIMEOUT_MS || 10000), 1000);
+const SYNC_SKIP_EXISTING_PINS_DEFAULT =
+  String(process.env.SYNC_SKIP_EXISTING_PINS_DEFAULT || 'true').toLowerCase() === 'true';
+const SYNC_SKIP_EXISTING_DB_LIMIT = Math.max(
+  Number(process.env.SYNC_SKIP_EXISTING_DB_LIMIT || 10000),
+  100
+);
 
 // Keep-alive agents for connection reuse
 const keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 25, keepAliveMsecs: 30000 });
@@ -279,6 +285,7 @@ async function callSetUserInfo(payload, apiToken) {
 }
 
 function buildSyncConfig(input = {}) {
+  const skipExistingPinsInput = input.skip_existing_pins ?? input.skipExistingPins;
   return {
     sourceCloudId: input.source_cloud_id || input.sourceCloudId || null,
     targetCloudId: input.target_cloud_id || input.targetCloudId || null,
@@ -290,7 +297,43 @@ function buildSyncConfig(input = {}) {
     concurrency: Math.min(Math.max(Number(input.concurrency || 3), 1), 10),
     recheckDelayMs: Math.max(Number(input.recheck_delay_ms ?? input.recheckDelayMs ?? SYNC_RECHECK_REQUEST_DELAY_MS), 0),
     setDelayMs: Math.max(Number(input.set_delay_ms ?? input.setDelayMs ?? SYNC_SET_USERINFO_DELAY_MS), 0),
+    skipExistingPins:
+      skipExistingPinsInput === undefined
+        ? SYNC_SKIP_EXISTING_PINS_DEFAULT
+        : String(skipExistingPinsInput).toLowerCase() === 'true',
   };
+}
+
+async function getKnownPinsForMachine(cloudId, webhookRecords = []) {
+  const pins = new Set();
+
+  for (const user of extractUsersFromRecords(webhookRecords, cloudId)) {
+    const pin = String(user?.pin || '').trim();
+    if (pin) {
+      pins.add(pin);
+    }
+  }
+
+  if (hasSupabaseConfig()) {
+    const supabase = getSupabaseClient();
+    const tableName = getSupabaseConfig().employeesTable;
+    const { data, error } = await supabase
+      .from(tableName)
+      .select('pin')
+      .eq('source_cloud_id', cloudId)
+      .limit(SYNC_SKIP_EXISTING_DB_LIMIT);
+
+    if (!error && Array.isArray(data)) {
+      for (const row of data) {
+        const pin = String(row?.pin || '').trim();
+        if (pin) {
+          pins.add(pin);
+        }
+      }
+    }
+  }
+
+  return pins;
 }
 
 function normalizePinBoundary(value) {
@@ -332,6 +375,7 @@ async function runEmployeeSync(rawConfig = {}) {
     concurrency,
     recheckDelayMs,
     setDelayMs,
+    skipExistingPins,
   } = buildSyncConfig(rawConfig);
   const requestId = rawConfig.request_id || rawConfig.requestId || createRequestId('sync');
   registerSession(requestId, { prefix: 'sync', type: 'sync-employees' });
@@ -380,6 +424,7 @@ async function runEmployeeSync(rawConfig = {}) {
   const recheckedPins = [];
   let users = initialUsers;
   let cancelled = false;
+  let skippedExistingCount = 0;
 
   if (missingPinsLimited.length) {
     const recheckStartedAt = new Date().toISOString();
@@ -428,14 +473,25 @@ async function runEmployeeSync(rawConfig = {}) {
     }
   }
 
+  const totalCandidateCount = users.length;
+  if (skipExistingPins) {
+    const existingTargetPins = await getKnownPinsForMachine(targetCloudId, records);
+    users = users.filter((user) => !existingTargetPins.has(String(user.pin).trim()));
+    skippedExistingCount = totalCandidateCount - users.length;
+  }
+
   if (!users.length) {
     finishSession(requestId, { status: 'completed', cancelled: false, total: 0 });
     return {
       statusCode: 404,
       payload: {
         success: false,
-        message: 'Tidak ada data userinfo dari mesin sumber. Jalankan get_userinfo dulu sampai webhook masuk.',
+        message: skipExistingPins
+          ? 'Tidak ada data baru untuk disinkronkan. Semua PIN sudah ada di mesin target.'
+          : 'Tidak ada data userinfo dari mesin sumber. Jalankan get_userinfo dulu sampai webhook masuk.',
         count: 0,
+        skipped_existing_count: skippedExistingCount,
+        skip_existing_pins: skipExistingPins,
         data: [],
         request_id: requestId,
       },
@@ -443,13 +499,21 @@ async function runEmployeeSync(rawConfig = {}) {
   }
 
   if (dryRun) {
-    finishSession(requestId, { status: 'completed', cancelled: false, total: users.length });
+    finishSession(requestId, {
+      status: 'completed',
+      cancelled: false,
+      total: users.length,
+      skippedExistingCount,
+    });
     return {
       statusCode: 200,
       payload: {
         success: true,
         message: 'Dry run OK. Tidak ada request yang dikirim ke Fingerspot.',
         count: users.length,
+        total_candidate_count: totalCandidateCount,
+        skipped_existing_count: skippedExistingCount,
+        skip_existing_pins: skipExistingPins,
         target_cloud_id: targetCloudId,
         start_pin: normalizedStartPin,
         end_pin: normalizedEndPin,
@@ -551,6 +615,7 @@ async function runEmployeeSync(rawConfig = {}) {
     cancelled,
     total: results.length,
     successCount,
+    skippedExistingCount,
     recheckedPins: recheckedPins.length,
     elapsedMs,
   });
@@ -566,6 +631,9 @@ async function runEmployeeSync(rawConfig = {}) {
       target_cloud_id: targetCloudId,
       start_pin: normalizedStartPin,
       end_pin: normalizedEndPin,
+      total_candidate_count: totalCandidateCount,
+      skipped_existing_count: skippedExistingCount,
+      skip_existing_pins: skipExistingPins,
       request_id: requestId,
       total: results.length,
       success_count: successCount,

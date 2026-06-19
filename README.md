@@ -200,6 +200,7 @@ Contoh copy semua user dari mesin A (`GQ5179635`) ke mesin B (`GQ5778665`):
   "source_cloud_id": "GQ5179635",
   "target_cloud_id": "GQ5778665",
   "trans_prefix": "copy-user",
+  "skip_existing_pins": true,
   "recheck_delay_ms": 200,
   "set_delay_ms": 150,
   "dry_run": false
@@ -209,6 +210,7 @@ Contoh copy semua user dari mesin A (`GQ5179635`) ke mesin B (`GQ5778665`):
 Catatan:
 
 - `dry_run: true` untuk cek data user tanpa mengirim ke mesin tujuan.
+- `skip_existing_pins: true` (default) akan melewati PIN yang sudah terdeteksi ada di mesin target.
 - `recheck_delay_ms` mengatur jeda saat backend meminta `get_userinfo` tambahan untuk PIN yang hilang.
 - `set_delay_ms` mengatur jeda tiap kirim `set_userinfo` ke mesin tujuan.
 - Jika hasil `count` 0, berarti data userinfo dari mesin sumber belum ada di webhook log. Jalankan `get_userinfo` per PIN dulu agar masuk ke log.
