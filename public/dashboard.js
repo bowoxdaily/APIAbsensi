@@ -386,6 +386,8 @@ async function runSync(forceDryRun) {
     limit: Number(document.getElementById('syncLimit').value),
     concurrency: Number(document.getElementById('syncConcurrency').value),
     dry_run: forceDryRun === true ? true : parseBool(document.getElementById('syncDryRun').value),
+    set_mode: document.getElementById('syncSetMode').value,
+    fallback_basic: parseBool(document.getElementById('syncFallbackBasic').value),
     request_id: requestId,
   };
 

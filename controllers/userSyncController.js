@@ -313,6 +313,8 @@ function buildSetUserInfoPayload({ user, targetCloudId, transPrefix, index, mode
 
 function buildSyncConfig(input = {}) {
   const skipExistingPinsInput = input.skip_existing_pins ?? input.skipExistingPins;
+  const setModeInput = input.set_mode ?? input.setMode;
+  const fallbackBasicInput = input.fallback_basic ?? input.fallbackBasic;
   return {
     sourceCloudId: input.source_cloud_id || input.sourceCloudId || null,
     targetCloudId: input.target_cloud_id || input.targetCloudId || null,
@@ -324,6 +326,11 @@ function buildSyncConfig(input = {}) {
     concurrency: Math.min(Math.max(Number(input.concurrency || 3), 1), 10),
     recheckDelayMs: Math.max(Number(input.recheck_delay_ms ?? input.recheckDelayMs ?? SYNC_RECHECK_REQUEST_DELAY_MS), 0),
     setDelayMs: Math.max(Number(input.set_delay_ms ?? input.setDelayMs ?? SYNC_SET_USERINFO_DELAY_MS), 0),
+    setMode: String(setModeInput || SYNC_SET_USERINFO_MODE || 'full').toLowerCase() === 'basic' ? 'basic' : 'full',
+    fallbackBasic:
+      fallbackBasicInput === undefined
+        ? SYNC_SET_USERINFO_FALLBACK_BASIC
+        : String(fallbackBasicInput).toLowerCase() === 'true',
     skipExistingPins:
       skipExistingPinsInput === undefined
         ? SYNC_SKIP_EXISTING_PINS_DEFAULT
@@ -444,6 +451,8 @@ async function runEmployeeSync(rawConfig = {}) {
     concurrency,
     recheckDelayMs,
     setDelayMs,
+    setMode,
+    fallbackBasic,
     skipExistingPins,
   } = buildSyncConfig(rawConfig);
   const requestId = rawConfig.request_id || rawConfig.requestId || createRequestId('sync');
@@ -601,6 +610,8 @@ async function runEmployeeSync(rawConfig = {}) {
         concurrency,
         recheck_delay_ms: recheckDelayMs,
         set_delay_ms: setDelayMs,
+        set_mode: setMode,
+        fallback_basic: fallbackBasic,
         request_id: requestId,
         data: users,
       },
@@ -616,7 +627,7 @@ async function runEmployeeSync(rawConfig = {}) {
     }
 
     try {
-      const preferredMode = SYNC_SET_USERINFO_MODE === 'basic' ? 'basic' : 'full';
+      const preferredMode = setMode;
       const payload = buildSetUserInfoPayload({
         user,
         targetCloudId,
@@ -632,7 +643,7 @@ async function runEmployeeSync(rawConfig = {}) {
       if (
         !isSetUserInfoSuccess(upstream) &&
         preferredMode === 'full' &&
-        SYNC_SET_USERINFO_FALLBACK_BASIC
+        fallbackBasic
       ) {
         fallbackTried = true;
         const basicPayload = buildSetUserInfoPayload({
@@ -664,7 +675,7 @@ async function runEmployeeSync(rawConfig = {}) {
         success: false,
         upstreamStatus: 0,
         upstream: { message: error.message },
-        set_mode: SYNC_SET_USERINFO_MODE === 'basic' ? 'basic' : 'full',
+        set_mode: setMode,
         fallback_basic_tried: false,
       });
     }
@@ -742,6 +753,8 @@ async function runEmployeeSync(rawConfig = {}) {
       elapsed_ms: elapsedMs,
       recheck_delay_ms: recheckDelayMs,
       set_delay_ms: setDelayMs,
+      set_mode: setMode,
+      fallback_basic: fallbackBasic,
       cancelled,
       rechecked_pins: recheckedPins,
       recheck_truncated: missingPins.length > missingPinsLimited.length,
