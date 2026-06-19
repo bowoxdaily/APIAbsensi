@@ -4,49 +4,29 @@ const { getMachineMap } = require('../config/runtimeConfig');
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
 const { pushAttlogToHris } = require('../services/hrisPush');
 const { buildSourceKey } = require('../utils/sourceKey');
+const { ensureFile, appendJsonLineWithRotate, readRecentJsonLines } = require('../utils/logIO');
 
 const logsFilePath = path.join(process.cwd(), 'logs', 'data.txt');
 const attlogFilePath = path.join(process.cwd(), 'logs', 'attlog.txt');
 const otherFilePath = path.join(process.cwd(), 'logs', 'other.txt');
 const syncStateFilePath = path.join(process.cwd(), 'logs', 'sync-state.json');
 const MAX_LOG_FILE_BYTES = Math.max(Number(process.env.MAX_LOG_FILE_BYTES || 10 * 1024 * 1024), 1024 * 1024);
+const LOG_TAIL_MAX_BYTES = Math.max(Number(process.env.LOG_TAIL_MAX_BYTES || 4 * 1024 * 1024), 64 * 1024);
+const LOG_TAIL_MAX_LINES = Math.max(Number(process.env.LOG_TAIL_MAX_LINES || 10000), 100);
 const API_TOKEN = process.env.API_TOKEN || '';
 const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN || '';
 
 async function ensureLogFile() {
-  await fs.mkdir(path.dirname(logsFilePath), { recursive: true });
-  try {
-    await fs.access(logsFilePath);
-  } catch (error) {
-    await fs.writeFile(logsFilePath, '', 'utf8');
-  }
+  await ensureFile(logsFilePath);
 }
 
 async function ensureNamedLogFile(filePath) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  try {
-    await fs.access(filePath);
-  } catch (error) {
-    await fs.writeFile(filePath, '', 'utf8');
-  }
+  await ensureFile(filePath);
 }
 
 async function appendJsonLine(filePath, payload) {
   await ensureNamedLogFile(filePath);
-
-  try {
-    const stat = await fs.stat(filePath);
-    if (stat.size > MAX_LOG_FILE_BYTES) {
-      const raw = await fs.readFile(filePath, 'utf8');
-      const lines = raw.split('\n').filter(Boolean);
-      const trimmedLines = lines.slice(Math.floor(lines.length / 2));
-      await fs.writeFile(filePath, trimmedLines.join('\n') + (trimmedLines.length ? '\n' : ''), 'utf8');
-    }
-  } catch (error) {
-    // Best effort trim: gagal trim tidak boleh memblokir append log.
-  }
-
-  await fs.appendFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');
+  await appendJsonLineWithRotate(filePath, payload, { maxBytes: MAX_LOG_FILE_BYTES });
 }
 
 const SKIP_WEBHOOK_TYPES = new Set(['get_userinfo', 'set_userinfo', 'userinfo']);
@@ -260,19 +240,10 @@ async function storeWebhook(req, res) {
 
 async function getWebhookRecords() {
   await ensureLogFile();
-
-  const raw = await fs.readFile(logsFilePath, 'utf8');
-  return raw
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch (error) {
-        return null;
-      }
-    })
-    .filter(Boolean);
+  return readRecentJsonLines(logsFilePath, {
+    maxBytes: LOG_TAIL_MAX_BYTES,
+    maxLines: LOG_TAIL_MAX_LINES,
+  });
 }
 
 async function getWebhookLogs(req, res) {

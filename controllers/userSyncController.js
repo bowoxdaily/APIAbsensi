@@ -4,8 +4,11 @@ const http = require('http');
 const https = require('https');
 const { createRequestId, registerSession, getSession, finishSession } = require('../config/requestRegistry');
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
+const { ensureFile, readRecentJsonLines } = require('../utils/logIO');
 
 const logsFilePath = path.join(process.cwd(), 'logs', 'data.txt');
+const LOG_TAIL_MAX_BYTES = Math.max(Number(process.env.LOG_TAIL_MAX_BYTES || 4 * 1024 * 1024), 64 * 1024);
+const LOG_TAIL_MAX_LINES = Math.max(Number(process.env.LOG_TAIL_MAX_LINES || 10000), 100);
 const API_BASE_URL = process.env.FINGERSPOT_BASE_URL || 'https://developer.fingerspot.io/api';
 const FINGERSPOT_API_TOKEN = process.env.FINGERSPOT_API_TOKEN || '';
 
@@ -50,29 +53,15 @@ function sleep(ms) {
 }
 
 async function ensureLogFile() {
-  await fs.mkdir(path.dirname(logsFilePath), { recursive: true });
-  try {
-    await fs.access(logsFilePath);
-  } catch (error) {
-    await fs.writeFile(logsFilePath, '', 'utf8');
-  }
+  await ensureFile(logsFilePath);
 }
 
 async function getWebhookRecords() {
   await ensureLogFile();
-  const raw = await fs.readFile(logsFilePath, 'utf8');
-
-  return raw
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch (error) {
-        return null;
-      }
-    })
-    .filter(Boolean);
+  return readRecentJsonLines(logsFilePath, {
+    maxBytes: LOG_TAIL_MAX_BYTES,
+    maxLines: LOG_TAIL_MAX_LINES,
+  });
 }
 
 function extractUsersFromRecords(records, sourceCloudId) {

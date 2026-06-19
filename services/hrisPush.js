@@ -7,6 +7,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const { getMachineMap } = require('../config/runtimeConfig');
 const { buildSourceKey } = require('../utils/sourceKey');
+const { appendJsonLineWithRotate } = require('../utils/logIO');
 
 const deliveredKeysPath = path.join(process.cwd(), 'logs', 'hris-delivered-keys.json');
 const failedLogPath = path.join(process.cwd(), 'logs', 'hris-push-failed.txt');
@@ -221,25 +222,7 @@ async function wasDelivered(sourceKey) {
 }
 
 async function appendFailedLog(entry) {
-  await fs.mkdir(path.dirname(failedLogPath), { recursive: true });
-
-  try {
-    const stat = await fs.stat(failedLogPath);
-    if (stat.size > MAX_LOG_FILE_BYTES) {
-      const raw = await fs.readFile(failedLogPath, 'utf8');
-      const lines = raw.split('\n').filter(Boolean);
-      const trimmedLines = lines.slice(Math.floor(lines.length / 2));
-      await fs.writeFile(
-        failedLogPath,
-        trimmedLines.join('\n') + (trimmedLines.length ? '\n' : ''),
-        'utf8'
-      );
-    }
-  } catch (error) {
-    // Best effort trim: gagal trim tidak boleh memblokir append log.
-  }
-
-  await fs.appendFile(failedLogPath, `${JSON.stringify(entry)}\n`, 'utf8');
+  await appendJsonLineWithRotate(failedLogPath, entry, { maxBytes: MAX_LOG_FILE_BYTES });
 }
 
 async function postToHris(body) {

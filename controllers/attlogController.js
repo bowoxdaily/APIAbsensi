@@ -2,10 +2,13 @@ const fs = require('fs/promises');
 const path = require('path');
 const { getMachineMap } = require('../config/runtimeConfig');
 const { getSupabaseClient, getSupabaseConfig, hasSupabaseConfig } = require('../config/supabase');
+const { ensureFile, readRecentJsonLines } = require('../utils/logIO');
 
 const logsDirPath = path.join(process.cwd(), 'logs');
 const logsFilePath = path.join(logsDirPath, 'attlog.txt');
 const masterLogsFilePath = path.join(logsDirPath, 'data.txt');
+const LOG_TAIL_MAX_BYTES = Math.max(Number(process.env.LOG_TAIL_MAX_BYTES || 4 * 1024 * 1024), 64 * 1024);
+const LOG_TAIL_MAX_LINES = Math.max(Number(process.env.LOG_TAIL_MAX_LINES || 10000), 100);
 
 function toDateKey(value) {
   if (!value) {
@@ -165,21 +168,11 @@ function mapAttlogRecord(record, includeMeta = false) {
 }
 
 async function ensureLogFile() {
-  await fs.mkdir(path.dirname(logsFilePath), { recursive: true });
-  try {
-    await fs.access(logsFilePath);
-  } catch (error) {
-    await fs.writeFile(logsFilePath, '', 'utf8');
-  }
+  await ensureFile(logsFilePath);
 }
 
 async function ensureMasterLogFile() {
-  await fs.mkdir(path.dirname(masterLogsFilePath), { recursive: true });
-  try {
-    await fs.access(masterLogsFilePath);
-  } catch (error) {
-    await fs.writeFile(masterLogsFilePath, '', 'utf8');
-  }
+  await ensureFile(masterLogsFilePath);
 }
 
 async function getAttlog(req, res) {
@@ -287,36 +280,18 @@ function parseCloudIdFilter(value) {
 
 async function getRawWebhookRecords() {
   await ensureLogFile();
-
-  const raw = await fs.readFile(logsFilePath, 'utf8');
-  return raw
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch (error) {
-        return null;
-      }
-    })
-    .filter(Boolean);
+  return readRecentJsonLines(logsFilePath, {
+    maxBytes: LOG_TAIL_MAX_BYTES,
+    maxLines: LOG_TAIL_MAX_LINES,
+  });
 }
 
 async function getRawMasterRecords() {
   await ensureMasterLogFile();
-
-  const raw = await fs.readFile(masterLogsFilePath, 'utf8');
-  return raw
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch (error) {
-        return null;
-      }
-    })
-    .filter(Boolean);
+  return readRecentJsonLines(masterLogsFilePath, {
+    maxBytes: LOG_TAIL_MAX_BYTES,
+    maxLines: LOG_TAIL_MAX_LINES,
+  });
 }
 
 function normalizeWebhookAttlogRecord(record) {
