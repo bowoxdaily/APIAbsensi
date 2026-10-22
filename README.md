@@ -330,6 +330,22 @@ Kalau `start_date` dan `end_date` tidak diisi, backend otomatis memakai rentang 
 
 Kalau mau ambil scan gabungan dari semua mesin terdaftar, gunakan `GET /api/attlog/combined`.
 
+### Ambil Attlog Bertahap Untuk HRIS
+
+Gunakan cursor pagination agar setiap response berisi maksimal 500 record dan tidak membaca file log:
+
+```text
+GET /api/attlog/combined?pagination=cursor&cloud_id=GQ5179635&date=2026-04-01&limit=300
+```
+
+Response berisi `data`, `next_cursor`, dan `has_more`. Simpan `next_cursor`, lalu kirim sebagai `cursor` pada request berikutnya hingga `has_more` bernilai `false`:
+
+```text
+GET /api/attlog/combined?pagination=cursor&cloud_id=GQ5179635&date=2026-04-01&limit=300&cursor=12345
+```
+
+Cursor memakai ID Supabase berurutan. Mode ini memerlukan Supabase aktif dan hanya membaca data yang sudah tersimpan di tabel attlogs; webhook log yang belum masuk Supabase tidak disertakan. `limit` default 300, maksimum 500.
+
 ## Test Get Attlog Bulk (Auto Split 2 Hari)
 
 Gunakan endpoint ini jika ingin tarik data lebih panjang tanpa kirim berkali-kali secara manual.

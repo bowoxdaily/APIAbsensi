@@ -36,6 +36,12 @@ function formatLocalDateKey(date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 
+function nextDateKey(dateKey) {
+  const date = new Date(`${dateKey}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
 function getDefaultDateRange() {
   const today = new Date();
   const yesterday = new Date(today);
@@ -351,6 +357,55 @@ async function getCombinedAttlog(req, res) {
   const includeLogs = String(req.query.include_logs || 'true').toLowerCase() !== 'false';
   const includeSupabase = String(req.query.include_supabase || 'true').toLowerCase() !== 'false';
   const dateRange = resolveDateRange(req.query);
+
+  // Cursor mode reads from indexed Supabase rows; legacy merged-log mode stays unchanged.
+  if (String(req.query.pagination || '').toLowerCase() === 'cursor') {
+    const requestedLimit = Number(req.query.limit || 300);
+    const pageSize = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 500) : 300;
+    const cursor = req.query.cursor === undefined ? '0' : String(req.query.cursor);
+    if (!/^\d+$/.test(cursor)) {
+      return res.status(400).json({ success: false, message: 'cursor harus berupa ID numerik' });
+    }
+    if (!hasSupabaseConfig()) {
+      return res.status(503).json({ success: false, message: 'Cursor pagination membutuhkan Supabase' });
+    }
+    if (!cloudIds.length) {
+      return res.json({ success: true, source: 'supabase', date_range: dateRange, count: 0, limit: pageSize, machines: [], data: [], next_cursor: cursor, has_more: false });
+    }
+
+    const supabase = getSupabaseClient();
+    const tableName = getSupabaseConfig().table;
+    let query = supabase
+      .from(tableName)
+      .select('id, source_key, cloud_id, trans_id, pin, scan_date, verify, status_scan, photo_url, fetched_at')
+      .in('cloud_id', cloudIds)
+      .gt('id', cursor)
+      .order('id', { ascending: true })
+      .limit(pageSize + 1);
+
+    if (dateRange.start_date) query = query.gte('scan_date', dateRange.start_date);
+    if (dateRange.end_date) query = query.lt('scan_date', nextDateKey(dateRange.end_date));
+
+    const { data, error } = await query;
+    if (error) {
+      return res.status(502).json({ success: false, message: 'Gagal mengambil halaman attlog', error: error.message });
+    }
+
+    const rows = Array.isArray(data) ? data : [];
+    const hasMore = rows.length > pageSize;
+    const page = rows.slice(0, pageSize);
+    return res.json({
+      success: true,
+      source: 'supabase',
+      date_range: dateRange,
+      count: page.length,
+      limit: pageSize,
+      machines: cloudIds,
+      data: page.map(normalizeSupabaseAttlogRecord),
+      next_cursor: page.length ? String(page[page.length - 1].id) : cursor,
+      has_more: hasMore,
+    });
+  }
 
   if (!cloudIds.length) {
     return res.json({
